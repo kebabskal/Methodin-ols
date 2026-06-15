@@ -1006,10 +1006,11 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 		}
 	}
 
-	// Second pass: collect fake methods after all symbols and proc group members are recorded
-	if collection.config != nil && collection.config.enable_fake_method {
-		collect_fake_methods(collection, exprs, directory, uri)
-	}
+	// Second pass: collect methods after all symbols and proc group members are
+	// recorded. The index is used both by the rewrite-style fake-method
+	// completion (gated by enable_fake_method) and by UFCS resolution in
+	// analysis.odin (always on), so the indexing itself is unconditional.
+	collect_fake_methods(collection, exprs, directory, uri)
 
 	collect_imports(collection, file, directory)
 
