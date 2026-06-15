@@ -3394,6 +3394,7 @@ resolve_symbol_selector :: proc(
 ) {
 	field: string
 	symbol := symbol
+	found := false
 
 	if selector.field != nil {
 		#partial switch v in selector.field.derived {
@@ -3408,6 +3409,7 @@ resolve_symbol_selector :: proc(
 			if strings.compare(name, field) == 0 {
 				symbol.range = v.ranges[i]
 				symbol.type = .EnumMember
+				found = true
 			}
 		}
 	case SymbolStructValue:
@@ -3418,6 +3420,7 @@ resolve_symbol_selector :: proc(
 				}
 				symbol.range = v.ranges[i]
 				symbol.type = .Field
+				found = true
 			}
 		}
 	case SymbolBitFieldValue:
@@ -3425,12 +3428,14 @@ resolve_symbol_selector :: proc(
 			if strings.compare(name, field) == 0 {
 				symbol.range = v.ranges[i]
 				symbol.type = .Field
+				found = true
 			}
 		}
 	case SymbolPackageValue:
 		if pkg, ok := lookup(field, symbol.pkg, symbol.uri); ok {
 			symbol.range = pkg.range
 			symbol.uri = pkg.uri
+			return symbol, true
 		} else {
 			return {}, false
 		}
@@ -3442,21 +3447,81 @@ resolve_symbol_selector :: proc(
 			return resolve_symbol_selector(ast_context, selector, s)
 		}
 	case SymbolSliceValue:
-		return resolve_soa_selector_field(ast_context, symbol, v.expr, nil, field)
+		if sym, ok := resolve_soa_selector_field(ast_context, symbol, v.expr, nil, field); ok {
+			return sym, true
+		}
 	case SymbolDynamicArrayValue:
 		if field == "allocator" {
 			return resolve_container_allocator_location(ast_context, "Raw_Dynamic_Array")
 		}
-		return resolve_soa_selector_field(ast_context, symbol, v.expr, nil, field)
+		if sym, ok := resolve_soa_selector_field(ast_context, symbol, v.expr, nil, field); ok {
+			return sym, true
+		}
 	case SymbolFixedArrayValue:
-		return resolve_soa_selector_field(ast_context, symbol, v.expr, v.len, field)
+		if sym, ok := resolve_soa_selector_field(ast_context, symbol, v.expr, v.len, field); ok {
+			return sym, true
+		}
 	case SymbolMapValue:
 		if field == "allocator" {
 			return resolve_container_allocator_location(ast_context, "Raw_Map")
 		}
 	}
 
+	// UFCS fallback: x.foo where foo isn't a field/enum-member/etc. — look it
+	// up as a free procedure declared in the receiver type's owning package
+	// (the same key used to register fake-method entries in the collector).
+	if !found && field != "" {
+		if sym, ok := try_resolve_ufcs_method(ast_context, symbol, field); ok {
+			return sym, true
+		}
+	}
+
 	return symbol, true
+}
+
+// try_resolve_ufcs_method searches the indexer's method map for a free proc
+// (or proc group) named `field` whose first parameter accepts a value of the
+// receiver type. Returns the resolved procedure symbol on success.
+//
+// Mirrors the indexing logic in collector.collect_method: methods are keyed by
+// the receiver type's owning package + type name. For builtin scalar types
+// (string, cstring, int, ...), the key's pkg is "$builtin"; for named types
+// it's the type's defining package.
+try_resolve_ufcs_method :: proc(
+	ast_context: ^AstContext,
+	receiver: Symbol,
+	field: string,
+) -> (
+	Symbol,
+	bool,
+) {
+	method_pkg := receiver.pkg
+	method_name := receiver.name
+	if is_builtin_type_name(receiver.name) {
+		method_pkg = "$builtin"
+	}
+	if method_name == "" {
+		return {}, false
+	}
+
+	method := Method{pkg = method_pkg, name = method_name}
+
+	for _, pkg in indexer.index.collection.packages {
+		symbols, ok := pkg.methods[method]
+		if !ok {
+			continue
+		}
+		for symbol in symbols {
+			if symbol.name != field {
+				continue
+			}
+			if should_skip_private_symbol(symbol, ast_context.current_package, ast_context.uri) {
+				continue
+			}
+			return symbol, true
+		}
+	}
+	return {}, false
 }
 
 

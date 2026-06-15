@@ -810,3 +810,54 @@ ast_goto_enum_field_value_reference :: proc(t: ^testing.T) {
 
 	test.expect_definition_locations(t, &source, {location})
 }
+
+@(test)
+ast_goto_ufcs_method_on_struct :: proc(t: ^testing.T) {
+	packages := make([dynamic]test.Package, context.temp_allocator)
+	append(&packages, test.Package{pkg = "game", source = `package game
+		Player :: struct { hp: int }
+		damage :: proc(p: ^Player, amount: int) { p.hp -= amount }
+	`})
+	source := test.Source {
+		main = `package test
+		import "game"
+		main :: proc() {
+			player: game.Player
+			player.d{*}amage(10)
+		}
+		`,
+		packages = packages[:],
+	}
+
+	// damage proc at line 2 of the game package source (the file itself
+	// indents the raw string with 2 tabs, so character 2 = identifier start).
+	location := common.Location {
+		range = {start = {line = 2, character = 2}, end = {line = 2, character = 8}},
+	}
+
+	test.expect_definition_locations(t, &source, {location})
+}
+
+@(test)
+ast_goto_ufcs_method_on_builtin_int :: proc(t: ^testing.T) {
+	packages := make([dynamic]test.Package, context.temp_allocator)
+	append(&packages, test.Package{pkg = "math", source = `package math
+		double :: proc(x: int) -> int { return x * 2 }
+	`})
+	source := test.Source {
+		main = `package test
+		import "math"
+		main :: proc() {
+			n: int = 7
+			n.d{*}ouble()
+		}
+		`,
+		packages = packages[:],
+	}
+
+	location := common.Location {
+		range = {start = {line = 1, character = 2}, end = {line = 1, character = 8}},
+	}
+
+	test.expect_definition_locations(t, &source, {location})
+}
