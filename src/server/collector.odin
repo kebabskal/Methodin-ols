@@ -918,6 +918,32 @@ register_in_struct_method :: proc(
 
 	name_ident, ni_ok := vd.names[0].derived.(^ast.Ident)
 	if !ni_ok do return
+
+	// `name :: proc { A, B }` inside a struct body — register a
+	// SymbolProcedureGroupValue under the struct's method bucket so
+	// completion / hover / goto-def on `x.name(...)` finds the group
+	// and overload resolution kicks in by first-arg type. Mirrors how
+	// file-scope proc groups are collected above.
+	if proc_group, pg_ok := vd.values[0].derived.(^ast.Proc_Group); pg_ok {
+		cloned_group := clone_type(vd.values[0], collection.allocator, &collection.unique_strings)
+		_ = proc_group
+
+		symbol := Symbol{}
+		symbol.range = common.get_token_range(name_ident^, file.src)
+		symbol.name = get_index_unique_string(collection, name_ident.name)
+		symbol.type = .Function
+		symbol.pkg = pkg_name
+		symbol.uri = get_index_unique_string(collection, uri)
+		symbol.value = SymbolProcedureGroupValue{group = cloned_group}
+
+		method_key := Method{
+			pkg  = get_index_unique_string(collection, pkg_name),
+			name = get_index_unique_string(collection, struct_name),
+		}
+		add_symbol_to_method(collection, pkg, method_key, symbol)
+		return
+	}
+
 	proc_lit, pl_ok := vd.values[0].derived.(^ast.Proc_Lit)
 	if !pl_ok || proc_lit.type == nil do return
 
