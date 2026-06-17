@@ -63,7 +63,10 @@ export async function activate(context: vscode.ExtensionContext) {
 		throw new Error(message);
 	});
 
-	checkForUpdates(config, state, false)
+	// Methodin-ols fork ships no nightly releases of its own; the only
+	// useful binary is the locally-built one (or whatever the user points
+	// `ols.server.path` at). Skip the upstream-update check so VS Code
+	// doesn't keep nagging "New version of ols (nightly) is available".
 
 
 	const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -381,6 +384,10 @@ async function getServer(config: Config, state: PersistentState): Promise<string
 }
 
 async function checkForUpdates(config: Config, state: PersistentState, required: boolean): Promise<void> {
+	// Disabled in the Methodin-ols fork — see note at the activation-time
+	// call site. We never want to download an upstream binary that doesn't
+	// understand the fork's syntax extensions.
+	return;
 	const platform = getPlatform()
 	const release = await downloadWithRetryDialog(state, required, async () => {
 		return await fetchRelease("nightly", state.githubToken, config.httpProxy);
