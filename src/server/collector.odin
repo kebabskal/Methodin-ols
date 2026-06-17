@@ -679,6 +679,146 @@ add_symbol_to_method :: proc(collection: ^SymbolCollection, pkg: ^SymbolPackage,
 	append(symbols, symbol)
 }
 
+// rewrite_method_calls_to_self walks `node` and, for each Call_Expr
+// whose callee is a bare Ident matching one of `method_names`, rewrites
+// the callee to `self.<ident>`. Mirrors the compiler's same-named pass
+// in parser.cpp so OLS sees the same AST shape and can resolve
+// goto-def / hover / completion on intra-method calls.
+@(private = "file")
+rewrite_method_calls_to_self :: proc(node: ^ast.Node, method_names: []string, file: ast.File) {
+	if node == nil do return
+
+	name_matches :: proc(s: string, set: []string) -> bool {
+		for x in set {
+			if x == s do return true
+		}
+		return false
+	}
+	walk_exprs :: proc(xs: []^ast.Expr, set: []string, file: ast.File) {
+		for x in xs do rewrite_method_calls_to_self(x, set, file)
+	}
+	walk_stmts :: proc(xs: []^ast.Stmt, set: []string, file: ast.File) {
+		for x in xs do rewrite_method_calls_to_self(x, set, file)
+	}
+
+	#partial switch n in node.derived {
+	case ^ast.Call_Expr:
+		if n.expr != nil {
+			if ident, ok := n.expr.derived.(^ast.Ident); ok && name_matches(ident.name, method_names) {
+				self_ident := ast.new(ast.Ident, ident.pos, ident.end)
+				self_ident.name = "self"
+				selector := ast.new(ast.Selector_Expr, ident.pos, ident.end)
+				selector.expr  = self_ident
+				selector.field = ident
+				n.expr = selector
+			}
+		}
+		rewrite_method_calls_to_self(n.expr, method_names, file)
+		walk_exprs(n.args, method_names, file)
+
+	case ^ast.Block_Stmt:        walk_stmts(n.stmts, method_names, file)
+	case ^ast.Expr_Stmt:         rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Return_Stmt:       walk_exprs(n.results, method_names, file)
+	case ^ast.Defer_Stmt:        rewrite_method_calls_to_self(n.stmt, method_names, file)
+	case ^ast.Assign_Stmt:
+		walk_exprs(n.lhs, method_names, file)
+		walk_exprs(n.rhs, method_names, file)
+	case ^ast.If_Stmt:
+		rewrite_method_calls_to_self(n.init, method_names, file)
+		rewrite_method_calls_to_self(n.cond, method_names, file)
+		rewrite_method_calls_to_self(n.body, method_names, file)
+		rewrite_method_calls_to_self(n.else_stmt, method_names, file)
+	case ^ast.For_Stmt:
+		rewrite_method_calls_to_self(n.init, method_names, file)
+		rewrite_method_calls_to_self(n.cond, method_names, file)
+		rewrite_method_calls_to_self(n.post, method_names, file)
+		rewrite_method_calls_to_self(n.body, method_names, file)
+	case ^ast.Range_Stmt:
+		walk_exprs(n.vals, method_names, file)
+		rewrite_method_calls_to_self(n.expr, method_names, file)
+		rewrite_method_calls_to_self(n.body, method_names, file)
+	case ^ast.Switch_Stmt:
+		rewrite_method_calls_to_self(n.init, method_names, file)
+		rewrite_method_calls_to_self(n.cond, method_names, file)
+		rewrite_method_calls_to_self(n.body, method_names, file)
+	case ^ast.Type_Switch_Stmt:
+		rewrite_method_calls_to_self(n.tag, method_names, file)
+		rewrite_method_calls_to_self(n.expr, method_names, file)
+		rewrite_method_calls_to_self(n.body, method_names, file)
+	case ^ast.Case_Clause:
+		walk_exprs(n.list, method_names, file)
+		walk_stmts(n.body, method_names, file)
+	case ^ast.When_Stmt:
+		rewrite_method_calls_to_self(n.cond, method_names, file)
+		rewrite_method_calls_to_self(n.body, method_names, file)
+		rewrite_method_calls_to_self(n.else_stmt, method_names, file)
+	case ^ast.Value_Decl:
+		walk_exprs(n.values, method_names, file)
+
+	case ^ast.Unary_Expr:    rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Binary_Expr:
+		rewrite_method_calls_to_self(n.left, method_names, file)
+		rewrite_method_calls_to_self(n.right, method_names, file)
+	case ^ast.Paren_Expr:    rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Selector_Expr: rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Index_Expr:
+		rewrite_method_calls_to_self(n.expr,  method_names, file)
+		rewrite_method_calls_to_self(n.index, method_names, file)
+	case ^ast.Deref_Expr:    rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Slice_Expr:
+		rewrite_method_calls_to_self(n.expr, method_names, file)
+		rewrite_method_calls_to_self(n.low,  method_names, file)
+		rewrite_method_calls_to_self(n.high, method_names, file)
+	case ^ast.Comp_Lit:      walk_exprs(n.elems, method_names, file)
+	case ^ast.Field_Value:
+		rewrite_method_calls_to_self(n.field, method_names, file)
+		rewrite_method_calls_to_self(n.value, method_names, file)
+	case ^ast.Ternary_If_Expr:
+		rewrite_method_calls_to_self(n.x,    method_names, file)
+		rewrite_method_calls_to_self(n.cond, method_names, file)
+		rewrite_method_calls_to_self(n.y,    method_names, file)
+	case ^ast.Type_Assertion: rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Type_Cast:
+		rewrite_method_calls_to_self(n.type, method_names, file)
+		rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Auto_Cast:     rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Or_Else_Expr:
+		rewrite_method_calls_to_self(n.x, method_names, file)
+		rewrite_method_calls_to_self(n.y, method_names, file)
+	case ^ast.Or_Return_Expr: rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Or_Branch_Expr: rewrite_method_calls_to_self(n.expr, method_names, file)
+	case ^ast.Proc_Lit:       rewrite_method_calls_to_self(n.body, method_names, file)
+	}
+}
+
+// Pre-process a batch of in-struct methods: collect their names, then
+// rewrite each body's bare-ident calls so a method can call sibling
+// methods without an explicit `self.` (matches the compiler's
+// `rewrite_method_calls_to_self` pass in src/parser.cpp).
+@(private = "file")
+preprocess_in_struct_method_bodies :: proc(methods: []^ast.Stmt, file: ast.File) {
+	names := make([dynamic]string, 0, len(methods), context.temp_allocator)
+	for m in methods {
+		vd, vd_ok := m.derived.(^ast.Value_Decl)
+		if !vd_ok do continue
+		if len(vd.names) != 1 do continue
+		ident, i_ok := vd.names[0].derived.(^ast.Ident)
+		if !i_ok do continue
+		append(&names, ident.name)
+	}
+	if len(names) == 0 do return
+
+	for m in methods {
+		vd, vd_ok := m.derived.(^ast.Value_Decl)
+		if !vd_ok do continue
+		if len(vd.values) != 1 do continue
+		proc_lit, pl_ok := vd.values[0].derived.(^ast.Proc_Lit)
+		if !pl_ok do continue
+		if proc_lit.body == nil do continue
+		rewrite_method_calls_to_self(proc_lit.body, names[:], file)
+	}
+}
+
 // register_in_struct_method synthesises a method-index entry for a
 // `name :: proc(...) {...}` declared inside a struct body or inside an
 // `impl <Type> { ... }` block. The compiler lifts these to free
@@ -939,6 +1079,7 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 			// per-receiver method index. The struct's name (= expr.name) is the
 			// receiver type the methods get keyed under.
 			if len(v.methods) > 0 {
+				preprocess_in_struct_method_bodies(v.methods, file)
 				method_pkg := get_or_create_package(collection, symbol.pkg)
 				for m in v.methods {
 					register_in_struct_method(collection, method_pkg, symbol.pkg, expr.name, m, package_map, file, uri)
@@ -1112,6 +1253,7 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 		type_ident, ti_ok := impl.type_expr.derived.(^ast.Ident)
 		if !ti_ok do continue
 		struct_name := type_ident.name
+		preprocess_in_struct_method_bodies(impl.methods, file)
 		method_pkg := get_or_create_package(collection, file_pkg_name)
 		for m in impl.methods {
 			register_in_struct_method(collection, method_pkg, file_pkg_name, struct_name, m, package_map, file, uri)

@@ -932,6 +932,42 @@ ast_goto_in_struct_method :: proc(t: ^testing.T) {
 }
 
 @(test)
+ast_goto_intra_struct_method_call :: proc(t: ^testing.T) {
+	// Inside an in-struct method body, a bare-ident call to another
+	// method on the same struct should resolve through UFCS the same
+	// way an explicit `self.<method>(...)` would. OLS mirrors the
+	// compiler's rewrite by walking the body AST and rewriting
+	// matching Call_Expr callees into `self.<ident>`.
+	packages := make([dynamic]test.Package, context.temp_allocator)
+	append(&packages, test.Package{pkg = "world", source = `package world
+		Animal :: struct {
+			greet :: proc(name: string) {
+				base_greet("Hi", name)
+			},
+			base_greet :: proc(greeting: string, name: string) {
+			},
+		}
+	`})
+	source := test.Source {
+		main = `package test
+		import "world"
+		main :: proc() {
+			a: world.Animal
+			a.gr{*}eet("there")
+		}
+		`,
+		packages = packages[:],
+	}
+
+	// goto-def from `a.greet` jumps to greet's declaration in world.
+	location := common.Location {
+		range = {start = {line = 2, character = 3}, end = {line = 2, character = 8}},
+	}
+
+	test.expect_definition_locations(t, &source, {location})
+}
+
+@(test)
 ast_goto_union_dispatch_method :: proc(t: ^testing.T) {
 	// When every variant of a union has the same method, the compiler
 	// synthesises a dispatcher at parse time. OLS mirrors that by
