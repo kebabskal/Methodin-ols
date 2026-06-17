@@ -3,7 +3,7 @@ import { log } from "./util";
 
 export class Config {
 
-	readonly extensionId = "danielgavin.ols";
+	readonly extensionId = "kebabskal.methodin-ols";
 	readonly rootSection = "ols";
 
 	readonly globalStorageUri: vscode.Uri;
