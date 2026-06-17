@@ -1260,14 +1260,37 @@ visit_stmt :: proc(
 		if is_values_return_stmt_callable(v.results) {
 			result := v.results[0]
 
+			// gofmt-style trailing-paren rule: when the user wrote
+			// `return (\n ... \n)` with the closing `)` on its own line,
+			// keep the paren-wrapped multi-line layout instead of
+			// collapsing the expression onto a single line. The
+			// auto-paren `if_break("(") / if_break(")")` only fires for
+			// non-fitting expressions, which is the opposite of what we
+			// want here — the user already opted in.
+			force_multiline := false
 			if paren, is_paren := result.derived.(^ast.Paren_Expr); is_paren {
+				if paren.close.line > paren.open.line {
+					force_multiline = true
+				}
 				result = paren.expr
 			}
 
-			document = cons(text("return"), if_break("("), break_with(" "), visit_expr(p, result))
+			if force_multiline {
+				document = cons(
+					text("return"),
+					break_with_no_newline(),
+					text("("),
+					nest(cons(break_with("", true), visit_expr(p, result))),
+					break_with("", true),
+					text(")"),
+				)
+				document = enforce_break(document)
+			} else {
+				document = cons(text("return"), if_break("("), break_with(" "), visit_expr(p, result))
 
-			document = nest(document)
-			document = group(cons(document, if_break(" \\"), break_with(""), if_break(")")))
+				document = nest(document)
+				document = group(cons(document, if_break(" \\"), break_with(""), if_break(")")))
+			}
 		} else {
 			document = cons(document, text("return"))
 
@@ -1811,7 +1834,22 @@ visit_expr :: proc(
 	case ^ast.Selector_Expr:
 		document = enforce_fit(cons(visit_expr(p, v.expr), text_token(p, v.op), visit_expr(p, v.field)))
 	case ^ast.Paren_Expr:
-		document = group(cons(text("("), nest(visit_expr(p, v.expr)), text(")")))
+		// gofmt-style trailing-paren rule: if the closing `)` is on its
+		// own line in the source, keep the expression multi-line even
+		// when it would fit. Lets the user opt into vertical layout for
+		// long `&&` / `||` chains without configuration. Single-line
+		// parens still go through the original group path so existing
+		// snapshots stay byte-identical.
+		if v.close.line > v.open.line {
+			document = enforce_break(cons(
+				text("("),
+				nest(cons(break_with("", true), visit_expr(p, v.expr))),
+				break_with("", true),
+				text(")"),
+			))
+		} else {
+			document = group(cons(text("("), nest(visit_expr(p, v.expr)), text(")")))
+		}
 	case ^ast.Index_Expr:
 		//Switch back to enforce fit, it just doesn't look good when breaking.
 		document = enforce_fit(
@@ -2190,8 +2228,17 @@ visit_struct_body :: proc(p: ^Printer, list: ^ast.Field_List, methods: []^ast.St
 		}
 
 		if i != len(items) - 1 && .Enforce_Newline in options {
+			// Preserve a single blank line if the source had one between
+			// items — useful for visually separating in-struct methods
+			// (and the occasional grouped-field block) without forcing
+			// it everywhere. gofmt-style "blank means blank".
+			cur_end_line := item.field != nil ? item.field.end.line : item.method.end.line
+			nl_amount := 1
+			if next_pos.line - cur_end_line > 1 {
+				nl_amount = 2
+			}
 			comment, _ := visit_comments(p, next_pos)
-			document = cons(document, comment, newline(1))
+			document = cons(document, comment, newline(nl_amount))
 		} else {
 			comment, _ := visit_comments(p, list.end)
 			document = cons(document, comment)
