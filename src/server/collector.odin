@@ -861,6 +861,15 @@ register_in_struct_method :: proc(
 	pos := name_ident.pos
 	end := name_ident.end
 
+	// `ast.new` honours `context.allocator`, but the caller of collect_symbols
+	// sets that to a per-file arena that gets `arena_free_all`'d after every
+	// file (see build.odin). Anything we stash into pkg.methods has to outlive
+	// that, so allocate the synthetic `using self: ^Struct` field tree from
+	// the collection's long-lived allocator instead.
+	prev_allocator := context.allocator
+	context.allocator = collection.allocator
+	defer context.allocator = prev_allocator
+
 	struct_ref := ast.new(ast.Ident, pos, end)
 	struct_ref.name = struct_name
 

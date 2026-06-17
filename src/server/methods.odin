@@ -118,7 +118,7 @@ add_proc_method_completion :: proc(
 	value: SymbolProcedureValue,
 	results: ^[dynamic]CompletionResult,
 ) {
-	if len(value.arg_types) == 0 || value.arg_types[0].type == nil {
+	if len(value.arg_types) == 0 || value.arg_types[0] == nil || value.arg_types[0].type == nil {
 		return
 	}
 	args := build_ufcs_arg_snippet(value.arg_types)
