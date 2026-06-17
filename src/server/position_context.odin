@@ -850,6 +850,13 @@ get_document_position_node :: proc(node: ^ast.Node, position_context: ^DocumentP
 			}
 		}
 		get_document_position(n.fields, position_context)
+		// Methodin: in-struct method bodies live in n.methods. Without
+		// descending into them, a cursor inside `tick :: proc() { ... }`
+		// never sets position_context.function, never sees the body's
+		// selectors/idents/fields, and most context-aware completions
+		// fall back to a generic identifier list — package members like
+		// `rl.GetFrameTime` look missing.
+		get_document_position(n.methods, position_context)
 	case ^ast.Union_Type:
 		position_context.union_type = n
 		get_document_position(n.poly_params, position_context)
