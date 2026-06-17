@@ -4564,11 +4564,20 @@ position_in_struct_decl :: proc(position_context: ^DocumentPositionContext) -> b
 		return false
 	}
 
-	if _, ok := position_context.value_decl.values[0].derived.(^ast.Struct_Type); ok {
-		return true
+	if _, ok := position_context.value_decl.values[0].derived.(^ast.Struct_Type); !ok {
+		return false
 	}
 
-	return false
+	// In Methodin, an in-struct method body lives syntactically inside
+	// the struct decl, but for completion purposes the cursor is in a
+	// regular proc body (imports, vars, procs all in scope). Only treat
+	// the struct decl as "type position" when the cursor isn't inside
+	// any enclosing Proc_Lit.
+	if position_context.function != nil {
+		return false
+	}
+
+	return true
 }
 
 is_lhs_comp_lit :: proc(position_context: ^DocumentPositionContext) -> bool {
