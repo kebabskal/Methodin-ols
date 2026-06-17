@@ -1,11 +1,11 @@
 {
-	"name": "ols",
-	"publisher": "DanielGavin",
-	"displayName": "Odin Language",
-	"description": "Odin language support",
+	"name": "methodin-ols",
+	"publisher": "kebabskal",
+	"displayName": "Methodin-ols",
+	"description": "Language support for Methodin (an experimental Odin fork that adds methods)",
 	"repository": {
 		"type": "git",
-		"url": "git://github.com/DanielGavin/ols.git"
+		"url": "git://github.com/kebabskal/Methodin-ols.git"
 	},
 	"version": "0.1.44",
 	"engines": {
