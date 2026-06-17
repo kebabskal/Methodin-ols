@@ -3495,6 +3495,49 @@ try_resolve_ufcs_method :: proc(
 	Symbol,
 	bool,
 ) {
+	// First try a direct lookup against the receiver type itself.
+	if sym, ok := try_resolve_ufcs_direct(ast_context, receiver, field); ok {
+		return sym, true
+	}
+
+	// Then BFS through `using` fields. First depth that yields any hit wins;
+	// we take the first such hit (the compiler reports the ambiguity).
+	frontier := make([dynamic]Symbol, context.temp_allocator)
+	ufcs_enqueue_using_children(ast_context, receiver, &frontier)
+
+	for len(frontier) > 0 {
+		next := make([dynamic]Symbol, context.temp_allocator)
+		for f in frontier {
+			if sym, ok := try_resolve_ufcs_direct(ast_context, f, field); ok {
+				return sym, true
+			}
+			ufcs_enqueue_using_children(ast_context, f, &next)
+		}
+		frontier = next
+	}
+
+	return {}, false
+}
+
+@(private = "file")
+try_resolve_ufcs_direct :: proc(
+	ast_context: ^AstContext,
+	receiver: Symbol,
+	field: string,
+) -> (
+	Symbol,
+	bool,
+) {
+	// Built-in container types ([dynamic]T, []T, [N]T, map[K]V) have no
+	// named receiver in the method index — their "methods" (append, clear,
+	// len, ...) are just polymorphic free procs in base:runtime.
+	#partial switch _ in receiver.value {
+	case SymbolDynamicArrayValue, SymbolSliceValue, SymbolFixedArrayValue, SymbolMapValue:
+		if sym, ok := lookup(field, "runtime", ast_context.uri); ok {
+			return sym, true
+		}
+	}
+
 	method_pkg := receiver.pkg
 	method_name := receiver.name
 	if is_builtin_type_name(receiver.name) {
@@ -3522,6 +3565,26 @@ try_resolve_ufcs_method :: proc(
 		}
 	}
 	return {}, false
+}
+
+@(private = "file")
+ufcs_enqueue_using_children :: proc(
+	ast_context: ^AstContext,
+	receiver: Symbol,
+	out: ^[dynamic]Symbol,
+) {
+	sv, is_struct := receiver.value.(SymbolStructValue)
+	if !is_struct {
+		return
+	}
+	for using_idx in sv.usings {
+		if using_idx < 0 || using_idx >= len(sv.types) {
+			continue
+		}
+		if sym, ok := resolve_type_expression(ast_context, sv.types[using_idx]); ok {
+			append(out, sym)
+		}
+	}
 }
 
 

@@ -861,3 +861,36 @@ ast_goto_ufcs_method_on_builtin_int :: proc(t: ^testing.T) {
 
 	test.expect_definition_locations(t, &source, {location})
 }
+
+@(test)
+ast_goto_ufcs_method_through_using_field_in_other_package :: proc(t: ^testing.T) {
+	// Cross-package using-walk: `Body` and `apply_force` live in the
+	// `physics` package; `Entity` in `test` embeds `physics.Body` with
+	// `using`. UFCS must walk the `using` field into the physics package
+	// to resolve `e.apply_force`.
+	packages := make([dynamic]test.Package, context.temp_allocator)
+	append(&packages, test.Package{pkg = "physics", source = `package physics
+		Body :: struct { x, y: f32 }
+		apply_force :: proc(b: ^Body, fx, fy: f32) { b.x += fx; b.y += fy }
+	`})
+	source := test.Source {
+		main = `package test
+		import "physics"
+		Entity :: struct {
+			using body: physics.Body,
+			name: string,
+		}
+		main :: proc() {
+			e: Entity
+			e.a{*}pply_force(1, 2)
+		}
+		`,
+		packages = packages[:],
+	}
+
+	location := common.Location {
+		range = {start = {line = 2, character = 2}, end = {line = 2, character = 13}},
+	}
+
+	test.expect_definition_locations(t, &source, {location})
+}

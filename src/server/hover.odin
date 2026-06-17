@@ -402,6 +402,18 @@ get_hover_information :: proc(document: ^Document, position: common.Position) ->
 				}
 			}
 		}
+
+		// UFCS fallback: `x.foo` where `foo` isn't a field of x's type — look it
+		// up as a free proc in the receiver type's defining package and hover
+		// over that.
+		if field != "" {
+			if resolved, ok := try_resolve_ufcs_method(&ast_context, selector, field); ok {
+				resolved := resolved
+				build_documentation(&ast_context, &resolved, false)
+				hover.contents = write_hover_content(&ast_context, resolved)
+				return hover, true, true
+			}
+		}
 	} else if position_context.implicit_selector_expr != nil {
 		implicit_selector := position_context.implicit_selector_expr
 		if symbol, ok := resolve_implicit_selector(&ast_context, &position_context); ok {
