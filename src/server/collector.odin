@@ -858,9 +858,6 @@ register_in_struct_method :: proc(
 		proc_lit.where_clauses,
 	)
 
-	pos := name_ident.pos
-	end := name_ident.end
-
 	// `ast.new` honours `context.allocator`, but the caller of collect_symbols
 	// sets that to a per-file arena that gets `arena_free_all`'d after every
 	// file (see build.odin). Anything we stash into pkg.methods has to outlive
@@ -870,8 +867,20 @@ register_in_struct_method :: proc(
 	context.allocator = collection.allocator
 	defer context.allocator = prev_allocator
 
+	// `name_ident.pos.file` is also a string view into arena memory; intern
+	// it once and reuse for every synthetic node's pos/end so nothing in
+	// the AST tree we're stashing carries a dangling file string.
+	pos := name_ident.pos
+	end := name_ident.end
+	pos.file = get_index_unique_string(collection, pos.file)
+	end.file = pos.file
+
 	struct_ref := ast.new(ast.Ident, pos, end)
-	struct_ref.name = struct_name
+	// `struct_name` is sliced out of the parsed file's source the same way
+	// — intern it so the signature printer (build_string_node →
+	// strings.contains) doesn't walk a dangling string view at completion
+	// time.
+	struct_ref.name = get_index_unique_string(collection, struct_name)
 
 	ptr_type := ast.new(ast.Pointer_Type, pos, end)
 	ptr_type.elem = struct_ref
