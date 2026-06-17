@@ -360,6 +360,26 @@ visit_decl :: proc(p: ^Printer, decl: ^ast.Decl, called_in_stmt := false) -> ^Do
 		} else {
 			return cons(document, group(lhs))
 		}
+	case ^ast.Impl_Block:
+		document := move_line(p, decl.pos)
+		document = cons(document, text("impl"))
+		document = cons_with_nopl(document, visit_expr(p, v.type_expr))
+		document = cons_with_nopl(document, text("{"))
+
+		if len(v.methods) == 0 {
+			document = cons(document, text("}"))
+			return document
+		}
+
+		body := empty()
+		for m in v.methods {
+			vd := cast(^ast.Decl)m
+			body = cons(body, visit_decl(p, vd))
+		}
+
+		document = cons(document, nest(body))
+		document = cons(document, newline(1), text("}"))
+		return document
 	case:
 		log.error(decl.derived)
 		p.errored_out = true
@@ -1650,7 +1670,9 @@ visit_expr :: proc(
 		document = cons_with_nopl(document, visit_where_clauses(p, v.where_clauses))
 
 
-		if v.fields != nil && len(v.fields.list) == 0 {
+		has_fields := v.fields != nil && len(v.fields.list) > 0
+		has_methods := len(v.methods) > 0
+		if v.fields != nil && !has_fields && !has_methods {
 			if called_from == .Generic {
 				document = cons(document, text("{"))
 			} else {
@@ -1661,7 +1683,7 @@ visit_expr :: proc(
 				comments, _ := visit_comments(p, v.end)
 				document = cons(document, nest(comments), newline(1), text("}"))
 			} else {
-				document = cons(document, visit_struct_field_list(p, v.fields, {.Add_Comma}), text("}"))
+				document = cons(document, visit_struct_body(p, v.fields, v.methods, {.Add_Comma}), text("}"))
 			}
 		} else if v.fields != nil {
 			document = cons(document, break_with_no_newline(), visit_begin_brace(p, v.pos, .Generic))
@@ -1672,7 +1694,7 @@ visit_expr :: proc(
 				nest(
 					cons(
 						newline_position(p, 1, v.fields.open),
-						group(visit_struct_field_list(p, v.fields, {.Add_Comma, .Trailing, .Enforce_Newline})),
+						group(visit_struct_body(p, v.fields, v.methods, {.Add_Comma, .Trailing, .Enforce_Newline})),
 					),
 				),
 			)
@@ -2065,6 +2087,119 @@ List_Option :: enum u8 {
 List_Options :: distinct bit_set[List_Option]
 
 @(private)
+// visit_struct_body prints a struct body, interleaving regular fields
+// from `list.list` with in-struct method decls (`name :: proc(...) {...}`)
+// from `methods` in source order so the original layout is preserved.
+visit_struct_body :: proc(p: ^Printer, list: ^ast.Field_List, methods: []^ast.Stmt, options := List_Options{}) -> ^Document {
+	StructItem :: struct {
+		field:    ^ast.Field, // nil when this is a method
+		method:   ^ast.Stmt,  // nil when this is a field
+		pos_off:  int,
+	}
+
+	items := make([dynamic]StructItem, 0, (list.list != nil ? len(list.list) : 0) + len(methods), context.temp_allocator)
+	if list.list != nil {
+		for f in list.list {
+			append(&items, StructItem{field = f, pos_off = f.pos.offset})
+		}
+	}
+	for m in methods {
+		append(&items, StructItem{method = m, pos_off = m.pos.offset})
+	}
+	slice.sort_by(items[:], proc(a, b: StructItem) -> bool { return a.pos_off < b.pos_off })
+
+	document := empty()
+	for item, i in items {
+		align := empty()
+		item_pos := item.field != nil ? item.field.pos : item.method.pos
+
+		p.source_position = item_pos
+
+		if i == 0 && .Enforce_Newline in options {
+			comment, ok := visit_comments(p, item_pos)
+			if _, is_nil := comment.(Document_Nil); !is_nil {
+				comment = cons(comment, newline(1))
+			}
+			document = cons(comment, document)
+		}
+
+		if item.method != nil {
+			// `name :: proc(...) {...}` — let the normal decl visitor
+			// handle proc-lit formatting.
+			vd := cast(^ast.Decl)item.method
+			document = cons(document, visit_decl(p, vd))
+		} else {
+			field := item.field
+
+			if .Using in field.flags {
+				document = cons(document, text("using"), break_with_no_newline())
+			}
+
+			if .Subtype in field.flags {
+				document = cons(document, text("#subtype"), break_with_no_newline())
+			}
+
+			name_options := List_Options{.Add_Comma}
+
+			if (.Enforce_Newline in options) {
+				if p.config.align_struct_fields {
+					alignment := get_possible_field_alignment(list.list)
+
+					if alignment > 0 {
+						length := 0
+						for name in field.names {
+							length += get_node_length(name) + 2
+							if .Using in field.flags {
+								length += 6
+							}
+							if .Subtype in field.flags {
+								length += 9
+							}
+						}
+						align = repeat_space(alignment - length)
+					}
+				}
+				document = cons(document, visit_exprs(p, field.names, name_options))
+			} else {
+				document = cons_with_opl(document, visit_exprs(p, field.names, name_options))
+			}
+
+			if field.type != nil {
+				if len(field.names) != 0 {
+					document = cons(document, text(" :" if p.config.spaces_around_colons else ":"), align)
+				}
+				document = cons_with_nopl(document, visit_expr(p, field.type))
+			} else {
+				document = cons(document, text(":"), text("="))
+				document = cons_with_opl(document, visit_expr(p, field.default_value))
+			}
+
+			if field.tag.text != "" {
+				document = cons_with_nopl(document, text_token(p, field.tag))
+			}
+		}
+
+		if (i != len(items) - 1 || .Trailing in options) && .Add_Comma in options {
+			document = cons(document, text(","))
+		}
+
+		next_pos := list.end
+		if i != len(items) - 1 {
+			next_item := items[i + 1]
+			next_pos = next_item.field != nil ? next_item.field.pos : next_item.method.pos
+		}
+
+		if i != len(items) - 1 && .Enforce_Newline in options {
+			comment, _ := visit_comments(p, next_pos)
+			document = cons(document, comment, newline(1))
+		} else {
+			comment, _ := visit_comments(p, list.end)
+			document = cons(document, comment)
+		}
+	}
+	return document
+}
+
 visit_struct_field_list :: proc(p: ^Printer, list: ^ast.Field_List, options := List_Options{}) -> ^Document {
 	document := empty()
 	if list.list == nil {
