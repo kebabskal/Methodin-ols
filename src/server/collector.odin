@@ -819,6 +819,80 @@ preprocess_in_struct_method_bodies :: proc(methods: []^ast.Stmt, file: ast.File)
 	}
 }
 
+// Looks up a same-file `Name :: struct { ... }` decl and returns its
+// Struct_Type AST. Used by the inheritance-aware union dispatch
+// collector below.
+@(private = "file")
+find_struct_type_in_file :: proc(file: ast.File, name: string) -> ^ast.Struct_Type {
+	for decl in file.decls {
+		vd, vd_ok := decl.derived.(^ast.Value_Decl)
+		if !vd_ok do continue
+		if vd.is_mutable do continue
+		if len(vd.values) != 1 || len(vd.names) != 1 do continue
+		name_ast, ni_ok := vd.names[0].derived.(^ast.Ident)
+		if !ni_ok do continue
+		if name_ast.name != name do continue
+		st, is_struct := vd.values[0].derived.(^ast.Struct_Type)
+		if !is_struct do continue
+		return st
+	}
+	return nil
+}
+
+// Returns a sample Symbol for `(sname, mname)` resolving through
+// single-ident `using` fields in the same file. Depth-capped to
+// defend against using-cycles the checker would normally flag later.
+@(private = "file")
+find_effective_method_lsp :: proc(method_pkg: ^SymbolPackage, file: ast.File, file_pkg_intern: string,
+                                   sname, mname: string, depth: int) -> (Symbol, bool) {
+	if depth > 8 do return Symbol{}, false
+
+	if syms, ok := method_pkg.methods[Method{pkg = file_pkg_intern, name = sname}]; ok {
+		for s in syms {
+			if s.name == mname do return s, true
+		}
+	}
+
+	st := find_struct_type_in_file(file, sname)
+	if st == nil || st.fields == nil do return Symbol{}, false
+	for field in st.fields.list {
+		if field == nil do continue
+		if ast.Field_Flag.Using not_in field.flags do continue
+		if field.type == nil do continue
+		ti, ti_ok := field.type.derived.(^ast.Ident)
+		if !ti_ok do continue
+		if hit, ok := find_effective_method_lsp(method_pkg, file, file_pkg_intern, ti.name, mname, depth+1); ok {
+			return hit, true
+		}
+	}
+	return Symbol{}, false
+}
+
+@(private = "file")
+collect_effective_method_names_lsp :: proc(method_pkg: ^SymbolPackage, file: ast.File, file_pkg_intern: string,
+                                            sname: string, out: ^[dynamic]string, depth: int) {
+	if depth > 8 do return
+
+	if syms, ok := method_pkg.methods[Method{pkg = file_pkg_intern, name = sname}]; ok {
+		for s in syms {
+			already := false
+			for x in out { if x == s.name { already = true; break } }
+			if !already do append(out, s.name)
+		}
+	}
+
+	st := find_struct_type_in_file(file, sname)
+	if st == nil || st.fields == nil do return
+	for field in st.fields.list {
+		if field == nil do continue
+		if ast.Field_Flag.Using not_in field.flags do continue
+		if field.type == nil do continue
+		ti, ti_ok := field.type.derived.(^ast.Ident)
+		if !ti_ok do continue
+		collect_effective_method_names_lsp(method_pkg, file, file_pkg_intern, ti.name, out, depth+1)
+	}
+}
+
 // register_in_struct_method synthesises a method-index entry for a
 // `name :: proc(...) {...}` declared inside a struct body or inside an
 // `impl <Type> { ... }` block. The compiler lifts these to free
@@ -1280,15 +1354,17 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 
 	// Mirror the compiler's union-dispatch synthesis (see
 	// `build_union_dispatcher` in src/parser.cpp): when every variant
-	// of a union has a method of the same name, the compiler stitches
-	// a dispatcher into the auto proc-group so `u.method(...)` works.
-	// OLS's method index is keyed by receiver type, so the equivalent
-	// is just to copy each variant's matching method into the union's
-	// method bucket. UFCS resolution then finds the same Symbols by
-	// name on a union receiver — goto-def / hover / completion land on
-	// one of the underlying variant methods.
+	// of a union has a method of the same name — either declared
+	// directly on the variant or inherited through a same-file `using`
+	// field — the compiler stitches a dispatcher into the auto
+	// proc-group so `u.method(...)` works. OLS's method index is keyed
+	// by receiver type, so the equivalent is to copy each variant's
+	// matching method (resolved through the same `using`-walk) into
+	// the union's method bucket.
 	{
 		method_pkg := get_or_create_package(collection, file_pkg_name)
+		file_pkg_intern := get_index_unique_string(collection, file_pkg_name)
+
 		for decl in file.decls {
 			vd, vd_ok := decl.derived.(^ast.Value_Decl)
 			if !vd_ok do continue
@@ -1309,46 +1385,26 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 			}
 			if !variants_ok do continue
 
-			first_methods, fok := method_pkg.methods[Method{
-				pkg  = get_index_unique_string(collection, file_pkg_name),
-				name = get_index_unique_string(collection, variant_names[0]),
-			}]
-			if !fok do continue
+			candidate_names := make([dynamic]string, 0, 8, context.temp_allocator)
+			collect_effective_method_names_lsp(method_pkg, file, file_pkg_intern, variant_names[0], &candidate_names, 0)
 
-			seen := make([dynamic]string, 0, len(first_methods), context.temp_allocator)
-			for symbol in first_methods {
-				m_name := symbol.name
-				already := false
-				for n in seen {
-					if n == m_name { already = true; break }
-				}
-				if already do continue
-				append(&seen, m_name)
+			for m_name in candidate_names {
+				sample, sample_ok := find_effective_method_lsp(method_pkg, file, file_pkg_intern, variant_names[0], m_name, 0)
+				if !sample_ok do continue
 
 				all_have_it := true
 				for i in 1 ..< len(variant_names) {
-					v_methods, vok := method_pkg.methods[Method{
-						pkg  = get_index_unique_string(collection, file_pkg_name),
-						name = get_index_unique_string(collection, variant_names[i]),
-					}]
-					if !vok { all_have_it = false; break }
-					found := false
-					for vs in v_methods {
-						if vs.name == m_name { found = true; break }
+					if _, ok := find_effective_method_lsp(method_pkg, file, file_pkg_intern, variant_names[i], m_name, 0); !ok {
+						all_have_it = false; break
 					}
-					if !found { all_have_it = false; break }
 				}
 				if !all_have_it do continue
 
 				union_method_key := Method{
-					pkg  = get_index_unique_string(collection, file_pkg_name),
+					pkg  = file_pkg_intern,
 					name = get_index_unique_string(collection, union_name),
 				}
-				for vs in first_methods {
-					if vs.name == m_name {
-						add_symbol_to_method(collection, method_pkg, union_method_key, vs)
-					}
-				}
+				add_symbol_to_method(collection, method_pkg, union_method_key, sample)
 			}
 		}
 	}
