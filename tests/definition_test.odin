@@ -932,6 +932,44 @@ ast_goto_in_struct_method :: proc(t: ^testing.T) {
 }
 
 @(test)
+ast_goto_union_dispatch_method :: proc(t: ^testing.T) {
+	// When every variant of a union has the same method, the compiler
+	// synthesises a dispatcher at parse time. OLS mirrors that by
+	// copying each variant's method into the union's bucket, so
+	// `thing.greet(...)` on a value of type `Thing` resolves to one
+	// of the variant methods (in this test, the first variant's).
+	packages := make([dynamic]test.Package, context.temp_allocator)
+	append(&packages, test.Package{pkg = "zoo", source = `package zoo
+		Animal :: struct {
+			greet :: proc(name: string) {
+			},
+		}
+		Dog :: struct {
+			greet :: proc(name: string) {
+			},
+		}
+		Thing :: union { Animal, Dog }
+	`})
+	source := test.Source {
+		main = `package test
+		import "zoo"
+		main :: proc() {
+			t: zoo.Thing
+			t.gr{*}eet("hi")
+		}
+		`,
+		packages = packages[:],
+	}
+
+	// The dispatch lands on Animal's greet (the first variant).
+	location := common.Location {
+		range = {start = {line = 2, character = 3}, end = {line = 2, character = 8}},
+	}
+
+	test.expect_definition_locations(t, &source, {location})
+}
+
+@(test)
 ast_goto_impl_block_method :: proc(t: ^testing.T) {
 	// Same as in-struct, but the method is declared in a separate
 	// `impl <Type> { ... }` block.

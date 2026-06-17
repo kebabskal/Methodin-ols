@@ -1118,6 +1118,81 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 		}
 	}
 
+	// Mirror the compiler's union-dispatch synthesis (see
+	// `build_union_dispatcher` in src/parser.cpp): when every variant
+	// of a union has a method of the same name, the compiler stitches
+	// a dispatcher into the auto proc-group so `u.method(...)` works.
+	// OLS's method index is keyed by receiver type, so the equivalent
+	// is just to copy each variant's matching method into the union's
+	// method bucket. UFCS resolution then finds the same Symbols by
+	// name on a union receiver — goto-def / hover / completion land on
+	// one of the underlying variant methods.
+	{
+		method_pkg := get_or_create_package(collection, file_pkg_name)
+		for decl in file.decls {
+			vd, vd_ok := decl.derived.(^ast.Value_Decl)
+			if !vd_ok do continue
+			if len(vd.values) != 1 || len(vd.names) != 1 do continue
+			ut, is_union := vd.values[0].derived.(^ast.Union_Type)
+			if !is_union do continue
+			union_name_ident, uni_ok := vd.names[0].derived.(^ast.Ident)
+			if !uni_ok do continue
+			union_name := union_name_ident.name
+			if len(ut.variants) == 0 do continue
+
+			variant_names := make([dynamic]string, 0, len(ut.variants), context.temp_allocator)
+			variants_ok := true
+			for variant in ut.variants {
+				v_ident, vok := variant.derived.(^ast.Ident)
+				if !vok { variants_ok = false; break }
+				append(&variant_names, v_ident.name)
+			}
+			if !variants_ok do continue
+
+			first_methods, fok := method_pkg.methods[Method{
+				pkg  = get_index_unique_string(collection, file_pkg_name),
+				name = get_index_unique_string(collection, variant_names[0]),
+			}]
+			if !fok do continue
+
+			seen := make([dynamic]string, 0, len(first_methods), context.temp_allocator)
+			for symbol in first_methods {
+				m_name := symbol.name
+				already := false
+				for n in seen {
+					if n == m_name { already = true; break }
+				}
+				if already do continue
+				append(&seen, m_name)
+
+				all_have_it := true
+				for i in 1 ..< len(variant_names) {
+					v_methods, vok := method_pkg.methods[Method{
+						pkg  = get_index_unique_string(collection, file_pkg_name),
+						name = get_index_unique_string(collection, variant_names[i]),
+					}]
+					if !vok { all_have_it = false; break }
+					found := false
+					for vs in v_methods {
+						if vs.name == m_name { found = true; break }
+					}
+					if !found { all_have_it = false; break }
+				}
+				if !all_have_it do continue
+
+				union_method_key := Method{
+					pkg  = get_index_unique_string(collection, file_pkg_name),
+					name = get_index_unique_string(collection, union_name),
+				}
+				for vs in first_methods {
+					if vs.name == m_name {
+						add_symbol_to_method(collection, method_pkg, union_method_key, vs)
+					}
+				}
+			}
+		}
+	}
+
 	collect_imports(collection, file, directory)
 
 
