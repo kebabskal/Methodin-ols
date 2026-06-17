@@ -2167,116 +2167,63 @@ append_magic_map_completion :: proc(
 		append(results, CompletionResult{completion_item = item})
 	}
 
-	remove_range := common.Range {
-		start = range.start,
-		end   = range.end,
+	ufcs_builtin :: proc(label: string, has_args: bool, results: ^[dynamic]CompletionResult) {
+		insert_text: string
+		if has_args {
+			insert_text = fmt.tprintf("%s($0)", label)
+		} else {
+			insert_text = fmt.tprintf("%s()$0", label)
+		}
+		item := CompletionItem {
+			label            = label,
+			kind             = .Function,
+			detail           = label,
+			insertText       = insert_text,
+			insertTextFormat = .Snippet,
+			command          = Command{command = "editor.action.triggerParameterHints"},
+		}
+		append(results, CompletionResult{completion_item = item})
 	}
 
-	remove_edit := TextEdit {
-		range   = remove_range,
-		newText = "",
-	}
-
-	additionalTextEdits := make([]TextEdit, 1, context.temp_allocator)
-	additionalTextEdits[0] = remove_edit
-
-	symbol_str := get_expression_string_from_position_context(position_context)
-	deref_suffix := ""
-	if symbol.pointers > 1 {
-		deref_suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
-	}
-	dereferenced_symbol_str := fmt.tprint(symbol_str, deref_suffix, sep = "")
-
-	//for
+	// `for` is a code template — still rewrites the source.
 	{
+		remove_edits := make([]TextEdit, 1, context.temp_allocator)
+		remove_edits[0] = TextEdit {
+			range   = common.Range{start = range.start, end = range.end},
+			newText = "",
+		}
+		symbol_str := get_expression_string_from_position_context(position_context)
+		deref_suffix := ""
+		if symbol.pointers > 1 {
+			deref_suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
+		}
+		receiver_str := fmt.tprint(symbol_str, deref_suffix, sep = "")
 		item := CompletionItem {
 			label = "for",
 			kind = .Snippet,
 			detail = "for",
-			additionalTextEdits = additionalTextEdits,
+			additionalTextEdits = remove_edits,
 			textEdit = TextEdit {
-				newText = fmt.tprintf("for ${{1:k}}, ${{2:v}} in %v {{\n\t$0 \n}}", dereferenced_symbol_str),
+				newText = fmt.tprintf("for ${{1:k}}, ${{2:v}} in %v {{\n\t$0 \n}}", receiver_str),
 				range = {start = range.end, end = range.end},
 			},
 			insertTextFormat = .Snippet,
 			InsertTextMode = .adjustIndentation,
 		}
-
 		append(results, CompletionResult{completion_item = item})
 	}
 
-	//len
-	{
-		text := fmt.tprintf("len(%v)", dereferenced_symbol_str)
-
-		item := CompletionItem {
-			label = "len",
-			kind = .Function,
-			detail = "len",
-			textEdit = TextEdit{newText = text, range = {start = range.end, end = range.end}},
-			additionalTextEdits = additionalTextEdits,
-		}
-
-		append(results, CompletionResult{completion_item = item})
-	}
-
-	//cap
-	{
-		text := fmt.tprintf("cap(%v)", dereferenced_symbol_str)
-
-		item := CompletionItem {
-			label = "cap",
-			kind = .Function,
-			detail = "cap",
-			textEdit = TextEdit{newText = text, range = {start = range.end, end = range.end}},
-			additionalTextEdits = additionalTextEdits,
-		}
-
-		append(results, CompletionResult{completion_item = item})
-	}
-
-	prefix := "&"
-	suffix := ""
-	if symbol.pointers > 0 {
-		prefix = ""
-		suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
-	}
-	ptr_symbol_str := fmt.tprint(prefix, symbol_str, suffix, sep = "")
+	ufcs_builtin("len", false, results)
+	ufcs_builtin("cap", false, results)
 
 	map_builtins_no_arg := []string{"clear", "shrink"}
-
 	for name in map_builtins_no_arg {
-		item := CompletionItem {
-			label = name,
-			kind = .Function,
-			detail = name,
-			textEdit = TextEdit {
-				newText = fmt.tprintf("%s(%v)", name, ptr_symbol_str),
-				range = {start = range.end, end = range.end},
-			},
-			additionalTextEdits = additionalTextEdits,
-		}
-
-		append(results, CompletionResult{completion_item = item})
+		ufcs_builtin(name, false, results)
 	}
 
 	map_builtins_with_args := []string{"delete_key", "reserve", "map_insert", "map_upsert", "map_entry"}
-
 	for name in map_builtins_with_args {
-		item := CompletionItem {
-			label = name,
-			kind = .Function,
-			detail = name,
-			additionalTextEdits = additionalTextEdits,
-			textEdit = TextEdit {
-				newText = fmt.tprintf("%s(%v, $0)", name, ptr_symbol_str),
-				range = {start = range.end, end = range.end},
-			},
-			insertTextFormat = .Snippet,
-			InsertTextMode = .adjustIndentation,
-		}
-
-		append(results, CompletionResult{completion_item = item})
+		ufcs_builtin(name, true, results)
 	}
 }
 
@@ -2314,61 +2261,56 @@ append_magic_array_like_completion :: proc(
 	}
 
 	range, ok := get_range_from_selection_start_to_dot(position_context)
-
 	if !ok {
 		return
 	}
 
-	remove_range := common.Range {
-		start = range.start,
-		end   = range.end,
-	}
-
-	remove_edit := TextEdit {
-		range   = remove_range,
-		newText = "",
-	}
-
-	additionalTextEdits := make([]TextEdit, 1, context.temp_allocator)
-	additionalTextEdits[0] = remove_edit
-
-	symbol_str := get_expression_string_from_position_context(position_context)
-	deref_suffix := ""
-	if symbol.pointers > 1 {
-		deref_suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
-	}
-	dereferenced_symbol_str := fmt.tprint(symbol_str, deref_suffix, sep = "")
-
-	//len
-	{
-		text := fmt.tprintf("len(%v)", dereferenced_symbol_str)
-
-		item := CompletionItem {
-			label = "len",
-			kind = .Function,
-			detail = "len",
-			textEdit = TextEdit{newText = text, range = {start = range.end, end = range.end}},
-			additionalTextEdits = additionalTextEdits,
+	ufcs_builtin :: proc(label: string, has_args: bool, results: ^[dynamic]CompletionResult) {
+		insert_text: string
+		if has_args {
+			insert_text = fmt.tprintf("%s($0)", label)
+		} else {
+			insert_text = fmt.tprintf("%s()$0", label)
 		}
-
+		item := CompletionItem {
+			label            = label,
+			kind             = .Function,
+			detail           = label,
+			insertText       = insert_text,
+			insertTextFormat = .Snippet,
+			command          = Command{command = "editor.action.triggerParameterHints"},
+		}
 		append(results, CompletionResult{completion_item = item})
 	}
 
-	//for
+	// `len` works for both slices and dynamic arrays (UFCS: `xs.len()` → `len(xs)`).
+	ufcs_builtin("len", false, results)
+
+	// `for` is a code template, not a method call — still rewrite the source.
 	{
+		remove_edits := make([]TextEdit, 1, context.temp_allocator)
+		remove_edits[0] = TextEdit {
+			range   = common.Range{start = range.start, end = range.end},
+			newText = "",
+		}
+		symbol_str := get_expression_string_from_position_context(position_context)
+		deref_suffix := ""
+		if symbol.pointers > 1 {
+			deref_suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
+		}
+		receiver_str := fmt.tprint(symbol_str, deref_suffix, sep = "")
 		item := CompletionItem {
 			label = "for",
 			kind = .Snippet,
 			detail = "for",
-			additionalTextEdits = additionalTextEdits,
+			additionalTextEdits = remove_edits,
 			textEdit = TextEdit {
-				newText = fmt.tprintf("for i in %v {{\n\t$0 \n}}", dereferenced_symbol_str),
+				newText = fmt.tprintf("for i in %v {{\n\t$0 \n}}", receiver_str),
 				range = {start = range.end, end = range.end},
 			},
 			insertTextFormat = .Snippet,
 			InsertTextMode = .adjustIndentation,
 		}
-
 		append(results, CompletionResult{completion_item = item})
 	}
 
@@ -2377,20 +2319,7 @@ append_magic_array_like_completion :: proc(
 		return
 	}
 
-	//cap
-	{
-		text := fmt.tprintf("cap(%v)", dereferenced_symbol_str)
-
-		item := CompletionItem {
-			label = "cap",
-			kind = .Function,
-			detail = "cap",
-			textEdit = TextEdit{newText = text, range = {start = range.end, end = range.end}},
-			additionalTextEdits = additionalTextEdits,
-		}
-
-		append(results, CompletionResult{completion_item = item})
-	}
+	ufcs_builtin("cap", false, results)
 
 	// allocator
 	{
@@ -2402,29 +2331,9 @@ append_magic_array_like_completion :: proc(
 		append(results, CompletionResult{completion_item = item})
 	}
 
-	prefix := "&"
-	suffix := ""
-	if symbol.pointers > 0 {
-		prefix = ""
-		suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
-	}
-	ptr_symbol_str := fmt.tprint(prefix, symbol_str, suffix, sep = "")
-
 	dynamic_array_builtins_no_arg := []string{"pop", "pop_safe", "pop_front", "pop_front_safe", "clear"}
-
 	for name in dynamic_array_builtins_no_arg {
-		item := CompletionItem {
-			label = name,
-			kind = .Function,
-			detail = name,
-			textEdit = TextEdit {
-				newText = fmt.tprintf("%s(%v)", name, ptr_symbol_str),
-				range = {start = range.end, end = range.end},
-			},
-			additionalTextEdits = additionalTextEdits,
-		}
-
-		append(results, CompletionResult{completion_item = item})
+		ufcs_builtin(name, false, results)
 	}
 
 	dynamic_array_builtins := []string {
@@ -2441,22 +2350,8 @@ append_magic_array_like_completion :: proc(
 		"non_zero_reserve",
 		"non_zero_resize",
 	}
-
 	for name in dynamic_array_builtins {
-		item := CompletionItem {
-			label = name,
-			kind = .Function,
-			detail = name,
-			additionalTextEdits = additionalTextEdits,
-			textEdit = TextEdit {
-				newText = fmt.tprintf("%s(%v, $0)", name, ptr_symbol_str),
-				range = {start = range.end, end = range.end},
-			},
-			insertTextFormat = .Snippet,
-			InsertTextMode = .adjustIndentation,
-		}
-
-		append(results, CompletionResult{completion_item = item})
+		ufcs_builtin(name, true, results)
 	}
 }
 

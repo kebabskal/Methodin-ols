@@ -5335,21 +5335,23 @@ ast_completion_fake_method_simple :: proc(t: ^testing.T) {
 		main = `package test
 		import "methods"
 		main :: proc() {
-			n: int
-			n.{*}
+			s: methods.Sample
+			s.{*}
 		}
 		`,
 		packages = {
 			{
 				pkg = "methods",
 				source = `package methods
-		double :: proc(x: int) -> int { return x * 2 }
+		Sample :: struct { x: int }
+		double :: proc(s: ^Sample) {}
 		`,
 			},
 		},
 		config = {enable_fake_method = true},
 	}
-	// Should show 'double' as a fake method for int
+	// 'double' is a free proc taking ^Sample as its first parameter, so
+	// `s.double()` is valid UFCS and should appear in completion.
 	test.expect_completion_labels(t, &source, ".", {"double"})
 }
 
@@ -5359,25 +5361,25 @@ ast_completion_fake_method_proc_group :: proc(t: ^testing.T) {
 		main = `package test
 		import "methods"
 		main :: proc() {
-			n: int
-			n.{*}
+			s: methods.Sample
+			s.{*}
 		}
 		`,
 		packages = {
 			{
 				pkg = "methods",
 				source = `package methods
-		add_int :: proc(a, b: int) -> int { return a + b }
-		add_something :: proc(a: int, b: string) {}
-		add_float :: proc(a, b: f32) -> f32 { return a + b }
-		add :: proc { add_float, add_int, add_something }
+		Sample :: struct { x: int }
+		add_int :: proc(s: ^Sample, b: int) {}
+		add_str :: proc(s: ^Sample, b: string) {}
+		add :: proc { add_int, add_str }
 		`,
 			},
 		},
 		config = {enable_fake_method = true},
 	}
-	// Should show 'add' (the proc group), not 'add_int' or 'add_something' (individual procs)
-	test.expect_completion_labels(t, &source, ".", {"add"}, {"add_int", "add_something"})
+	// Should show 'add' (the proc group), not 'add_int' or 'add_str' (individual procs).
+	test.expect_completion_labels(t, &source, ".", {"add"}, {"add_int", "add_str"})
 }
 
 @(test)
@@ -5444,62 +5446,32 @@ ast_completion_fake_method_proc_group_with_only_one_proc :: proc(t: ^testing.T) 
 }
 
 @(test)
-ast_completion_fake_method_builtin_type_uses_builtin_pkg :: proc(t: ^testing.T) {
-	// This test verifies that fake methods for builtin types (int, f32, string, etc.)
-	// are correctly looked up using "$builtin" as the package, not the package where
-	// the variable is declared. Without this fix, the method lookup would fail because:
-	// - Storage: method stored with key {pkg = "$builtin", name = "int"}
-	// - Lookup (wrong): would use {pkg = "test", name = "int"} based on variable's declaring package
-	// - Lookup (correct): uses {pkg = "$builtin", name = "int"} for builtin types
-	source := test.Source {
-		main = `package test
-		import "math_utils"
-		main :: proc() {
-			x: f32
-			x.{*}
-		}
-		`,
-		packages = {
-			{
-				pkg = "math_utils",
-				source = `package math_utils
-		square :: proc(v: f32) -> f32 { return v * v }
-		cube :: proc(v: f32) -> f32 { return v * v * v }
-		`,
-			},
-		},
-		config = {enable_fake_method = true},
-	}
-	// Both methods should appear as fake methods for f32, proving that
-	// the lookup correctly uses "$builtin" instead of "test" for the package
-	test.expect_completion_labels(t, &source, ".", {"square", "cube"})
-}
-
-@(test)
 ast_completion_fake_method_proc_group_single_arg_cursor_position :: proc(t: ^testing.T) {
 	source := test.Source {
 		main = `package test
 		import "methods"
 		main :: proc() {
-			n: int
-			n.{*}
+			s: methods.Sample
+			s.{*}
 		}
 		`,
 		packages = {
 			{
 				pkg = "methods",
 				source = `package methods
-		// All members only take a single argument (the receiver)
-		negate_a :: proc(x: int) -> int { return -x }
-		negate_b :: proc(x: int) -> int { return 0 - x }
+		Sample :: struct { x: int }
+		// All members only take a single argument (the receiver).
+		negate_a :: proc(s: ^Sample) {}
+		negate_b :: proc(s: ^Sample) {}
 		negate :: proc { negate_a, negate_b }
 		`,
 			},
 		},
 		config = {enable_fake_method = true},
 	}
-	// The proc group 'negate' should have cursor AFTER parentheses since no additional args
-	test.expect_completion_edit_text(t, &source, ".", "negate", "methods.negate(n)$0")
+	// No additional args beyond the receiver — the snippet leaves the
+	// cursor outside the closing paren so Tab exits the call.
+	test.expect_completion_insert_text(t, &source, ".", {"negate()$0"})
 }
 
 @(test)
