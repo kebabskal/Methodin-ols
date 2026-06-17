@@ -679,6 +679,87 @@ add_symbol_to_method :: proc(collection: ^SymbolCollection, pkg: ^SymbolPackage,
 	append(symbols, symbol)
 }
 
+// register_in_struct_method synthesises a method-index entry for a
+// `name :: proc(...) {...}` declared inside a struct body or inside an
+// `impl <Type> { ... }` block. The compiler lifts these to free
+// `name :: proc(using self: ^Type, ...) {...}` decls at package scope;
+// OLS doesn't have to mirror that exactly — its method index is keyed
+// by receiver-type-pkg-and-name, so we can drop the lifted Symbol
+// straight into pkg.methods[{pkg=Type's pkg, name=Type's name}] and
+// the UFCS resolver in analysis.odin finds it on `x.name(...)`.
+@(private = "file")
+register_in_struct_method :: proc(
+	collection: ^SymbolCollection,
+	pkg: ^SymbolPackage,
+	pkg_name: string,
+	struct_name: string,
+	method_stmt: ^ast.Stmt,
+	package_map: map[string]string,
+	file: ast.File,
+	uri: string,
+) {
+	vd, vd_ok := method_stmt.derived.(^ast.Value_Decl)
+	if !vd_ok do return
+	if len(vd.names) != 1 || len(vd.values) != 1 do return
+
+	name_ident, ni_ok := vd.names[0].derived.(^ast.Ident)
+	if !ni_ok do return
+	proc_lit, pl_ok := vd.values[0].derived.(^ast.Proc_Lit)
+	if !pl_ok || proc_lit.type == nil do return
+
+	value := collect_procedure_fields(
+		collection,
+		proc_lit.type,
+		proc_lit.type.params,
+		proc_lit.type.results,
+		package_map,
+		nil,
+		proc_lit.inlining,
+		proc_lit.where_clauses,
+	)
+
+	pos := name_ident.pos
+	end := name_ident.end
+
+	struct_ref := ast.new(ast.Ident, pos, end)
+	struct_ref.name = struct_name
+
+	ptr_type := ast.new(ast.Pointer_Type, pos, end)
+	ptr_type.elem = struct_ref
+
+	self_ident := ast.new(ast.Ident, pos, end)
+	self_ident.name = "self"
+
+	self_field := ast.new(ast.Field, pos, end)
+	self_names := make([]^ast.Expr, 1, collection.allocator)
+	self_names[0] = self_ident
+	self_field.names = self_names
+	self_field.type = ptr_type
+	self_field.flags = {.Using}
+
+	new_args := make([]^ast.Field, len(value.arg_types) + 1, collection.allocator)
+	new_args[0] = self_field
+	for f, i in value.arg_types {
+		new_args[i + 1] = f
+	}
+	value.arg_types = new_args
+	value.orig_arg_types = new_args
+
+	symbol := Symbol{}
+	symbol.range = common.get_token_range(name_ident^, file.src)
+	symbol.name = get_index_unique_string(collection, name_ident.name)
+	symbol.type = .Function
+	symbol.pkg = pkg_name
+	symbol.uri = get_index_unique_string(collection, uri)
+	symbol.value = value
+
+	method_key := Method{
+		pkg  = get_index_unique_string(collection, pkg_name),
+		name = get_index_unique_string(collection, struct_name),
+	}
+	add_symbol_to_method(collection, pkg, method_key, symbol)
+}
+
 collect_objc :: proc(collection: ^SymbolCollection, attributes: []^ast.Attribute, symbol: Symbol) {
 	pkg := &collection.packages[symbol.pkg]
 
@@ -854,6 +935,16 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 			symbol.value = collect_struct_fields(collection, v, package_map, file)
 			symbol.signature = "struct"
 
+			// Lift in-struct method decls (`name :: proc(...) {...}`) into the
+			// per-receiver method index. The struct's name (= expr.name) is the
+			// receiver type the methods get keyed under.
+			if len(v.methods) > 0 {
+				method_pkg := get_or_create_package(collection, symbol.pkg)
+				for m in v.methods {
+					register_in_struct_method(collection, method_pkg, symbol.pkg, expr.name, m, package_map, file, uri)
+				}
+			}
+
 			if _, is_objc := get_attribute_objc_class_name(expr.attributes); is_objc {
 				symbol.flags |= {.ObjC}
 				if get_attribute_objc_is_class_method(expr.attributes) {
@@ -1011,6 +1102,21 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 	// completion (gated by enable_fake_method) and by UFCS resolution in
 	// analysis.odin (always on), so the indexing itself is unconditional.
 	collect_fake_methods(collection, exprs, directory, uri)
+
+	// `impl <Type> { ... }` blocks live in file.decls; their methods need
+	// to be lifted into the per-receiver method index the same way
+	// in-struct methods are.
+	for decl in file.decls {
+		impl, ok := decl.derived.(^ast.Impl_Block)
+		if !ok do continue
+		type_ident, ti_ok := impl.type_expr.derived.(^ast.Ident)
+		if !ti_ok do continue
+		struct_name := type_ident.name
+		method_pkg := get_or_create_package(collection, file_pkg_name)
+		for m in impl.methods {
+			register_in_struct_method(collection, method_pkg, file_pkg_name, struct_name, m, package_map, file, uri)
+		}
+	}
 
 	collect_imports(collection, file, directory)
 

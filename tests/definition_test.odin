@@ -894,3 +894,70 @@ ast_goto_ufcs_method_through_using_field_in_other_package :: proc(t: ^testing.T)
 
 	test.expect_definition_locations(t, &source, {location})
 }
+
+@(test)
+ast_goto_in_struct_method :: proc(t: ^testing.T) {
+	// `name :: proc(...)` declared inside the struct body should be
+	// reachable via UFCS like a free proc keyed by the receiver type.
+	// Lives in a sub-package because OLS only indexes packages in the
+	// test harness.
+	packages := make([dynamic]test.Package, context.temp_allocator)
+	append(&packages, test.Package{pkg = "game", source = `package game
+		Player :: struct {
+			hp: int,
+			damage :: proc(amount: int) {
+				hp -= amount
+			},
+		}
+	`})
+	source := test.Source {
+		main = `package test
+		import "game"
+		main :: proc() {
+			p: game.Player
+			p.da{*}mage(10)
+		}
+		`,
+		packages = packages[:],
+	}
+
+	// `damage` ident is on line 3 of the game package source with 3
+	// tabs of indent (one for the raw string, one for the struct,
+	// one for the field list).
+	location := common.Location {
+		range = {start = {line = 3, character = 3}, end = {line = 3, character = 9}},
+	}
+
+	test.expect_definition_locations(t, &source, {location})
+}
+
+@(test)
+ast_goto_impl_block_method :: proc(t: ^testing.T) {
+	// Same as in-struct, but the method is declared in a separate
+	// `impl <Type> { ... }` block.
+	packages := make([dynamic]test.Package, context.temp_allocator)
+	append(&packages, test.Package{pkg = "geometry", source = `package geometry
+		Box :: struct { w, h: int }
+		impl Box {
+			area :: proc() -> int {
+				return w * h
+			}
+		}
+	`})
+	source := test.Source {
+		main = `package test
+		import "geometry"
+		main :: proc() {
+			b: geometry.Box
+			b.ar{*}ea()
+		}
+		`,
+		packages = packages[:],
+	}
+
+	location := common.Location {
+		range = {start = {line = 3, character = 3}, end = {line = 3, character = 7}},
+	}
+
+	test.expect_definition_locations(t, &source, {location})
+}
