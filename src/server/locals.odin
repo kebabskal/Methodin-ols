@@ -1222,6 +1222,58 @@ get_locals_poly :: proc(file: ast.File, params: ^ast.Field_List, ast_context: ^A
 	}
 }
 
+// Methodin: a method declared inside a struct body (`name :: proc(...) {...}`)
+// is parsed into `Struct_Type.methods` *without* the synthetic `using self: ^T`
+// parameter the compiler lifts it with. Inside such a body the struct's own
+// fields — and a `self` receiver — are in scope; bring them in so bare-field
+// completion and resolution work, exactly as if the source said
+// `using self: ^Struct`.
+add_in_struct_method_self_scope :: proc(
+	file: ast.File,
+	proc_lit: ^ast.Proc_Lit,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	struct_type := document_position.struct_type
+	if struct_type == nil {
+		return
+	}
+
+	// Only act when this proc literal is one of the struct's in-struct methods,
+	// not, e.g., a nested proc literal used as a field default value.
+	is_method := false
+	method_loop: for m in struct_type.methods {
+		vd, vd_ok := m.derived.(^ast.Value_Decl)
+		if !vd_ok {
+			continue
+		}
+		for v in vd.values {
+			if pl, pl_ok := v.derived.(^ast.Proc_Lit); pl_ok && pl == proc_lit {
+				is_method = true
+				break method_loop
+			}
+		}
+	}
+	if !is_method {
+		return
+	}
+
+	// `^<struct>`, expanded as if a `using self: ^struct` parameter were present.
+	pos := proc_lit.pos
+	end := proc_lit.end
+	ptr := new_type(ast.Pointer_Type, pos, end, ast_context.allocator)
+	ptr.elem = cast(^ast.Expr)struct_type
+
+	self_ident := new_type(ast.Ident, pos, end, ast_context.allocator)
+	self_ident.name = "self"
+	store_local(ast_context, self_ident, ptr, pos.offset, "self", ast_context.non_mutable_only, false, {.Mutable}, "", true)
+
+	using_stmt: ast.Using_Stmt
+	using_stmt.list = make([]^ast.Expr, 1, context.temp_allocator)
+	using_stmt.list[0] = ptr
+	get_locals_using_stmt(using_stmt, ast_context)
+}
+
 get_function_locals :: proc(
 	file: ast.File,
 	function: ^ast.Node,
@@ -1238,6 +1290,8 @@ get_function_locals :: proc(
 	}
 
 	get_locals_proc_param_and_results(file, proc_lit^, ast_context, document_position)
+
+	add_in_struct_method_self_scope(file, proc_lit, ast_context, document_position)
 
 	block: ^ast.Block_Stmt
 	block, ok = proc_lit.body.derived.(^ast.Block_Stmt)
