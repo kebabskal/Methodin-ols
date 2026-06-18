@@ -510,6 +510,13 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 	case ^ast.Foreign_Import_Decl:
 		resolve_nodes(n.attributes[:], data)
 		resolve_node(n.name, data)
+	case ^ast.Impl_Block:
+		// Methodin: `impl <Type> { name :: proc(...) {...} }`. Walk the target
+		// type and the method bodies so identifiers used only inside them —
+		// notably imported-package references — are recorded and not reported
+		// as unused imports.
+		resolve_node(n.type_expr, data)
+		resolve_nodes(n.methods, data)
 	case ^ast.Proc_Group:
 		resolve_nodes(n.args, data)
 	case ^ast.Attribute:
@@ -553,6 +560,12 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 		}
 		local_scope_poly(data, n.poly_params)
 		resolve_node(n.fields, data)
+
+		// Methodin: in-struct method decls (`name :: proc(...) {...}`) live in
+		// n.methods, not n.fields. Walk them so identifiers used only inside a
+		// method body — notably imported-package references — are still recorded;
+		// otherwise such imports are wrongly reported as unused.
+		resolve_nodes(n.methods, data)
 
 		if data.flag != .None {
 			for field in n.fields.list {

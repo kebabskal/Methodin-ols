@@ -596,6 +596,37 @@ expect_action :: proc(t: ^testing.T, src: ^Source, expect_action_names: []string
 	}
 }
 
+// Asserts that exactly the given import base names are reported as unused (order-insensitive).
+expect_unused_imports :: proc(t: ^testing.T, src: ^Source, expected_unused: []string) {
+	setup(src)
+	defer teardown(src)
+
+	unused := server.find_unused_imports(src.document, context.temp_allocator)
+
+	got := make([dynamic]string, 0, len(unused), context.temp_allocator)
+	for imp in unused {
+		append(&got, imp.base)
+	}
+
+	if len(got) != len(expected_unused) {
+		log.errorf("Expected unused imports %v, but got %v", expected_unused, got[:])
+		return
+	}
+
+	for name in expected_unused {
+		found := false
+		for g in got {
+			if g == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			log.errorf("Expected %q to be unused, but unused set was %v", name, got[:])
+		}
+	}
+}
+
 expect_action_with_edit :: proc(t: ^testing.T, src: ^Source, action_name: string, expected_new_text: string) {
 	setup(src)
 	defer teardown(src)
