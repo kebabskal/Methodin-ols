@@ -9,6 +9,7 @@ import "core:odin/tokenizer"
 import "core:path/filepath"
 import path "core:path/slashpath"
 import "core:reflect"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 
@@ -1540,6 +1541,9 @@ resolve_call_expr :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr) -> (Symbo
 			ast_context.call = nil
 			ok = internal_resolve_type_expression(ast_context, v.args[0], &symbol)
 			return symbol, ok
+		case "auto_union":
+			ast_context.call = nil
+			return resolve_auto_union(ast_context, v)
 		}
 	} else if call, ok := v.expr.derived.(^ast.Call_Expr); ok {
 		// handle the case where we immediately call a proc returned by another proc
@@ -1563,6 +1567,97 @@ resolve_call_expr :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr) -> (Symbo
 
 	ok := internal_resolve_type_expression(ast_context, v.expr, &symbol)
 	return symbol, ok
+}
+
+// Methodin: does struct `sv` have, as its first field, a `using`-embedded field
+// whose type resolves to `target` (directly or transitively at offset 0)?
+auto_union_embeds :: proc(ast_context: ^AstContext, sv: SymbolStructValue, target: Symbol, depth: int) -> bool {
+	if depth > 32 || len(sv.types) == 0 {
+		return false
+	}
+	if !symbol_struct_value_has_using(sv, 0) {
+		return false
+	}
+	field_sym, ok := resolve_type_expression(ast_context, sv.types[0])
+	if !ok {
+		return false
+	}
+	if field_sym.pkg == target.pkg && field_sym.name == target.name {
+		return true
+	}
+	if inner, is_struct := field_sym.value.(SymbolStructValue); is_struct {
+		return auto_union_embeds(ast_context, inner, target, depth + 1)
+	}
+	return false
+}
+
+// Methodin: `auto_union(T)` resolves to a union of every indexed struct that
+// `using`-embeds T at offset 0 (directly or transitively). The variants are
+// listed as plain idents so hover/go-to-definition/type-switch reuse the normal
+// union machinery, and hovering the alias reveals which structs are included.
+resolve_auto_union :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr) -> (Symbol, bool) {
+	target, ok := resolve_type_expression(ast_context, v.args[0])
+	if !ok {
+		return {}, false
+	}
+
+	types := make([dynamic]^ast.Expr, 0, ast_context.allocator)
+	seen := make(map[string]bool, 0, context.temp_allocator)
+
+	add_variant :: proc(
+		ast_context: ^AstContext,
+		v: ^ast.Call_Expr,
+		name: string,
+		sym: Symbol,
+		target: Symbol,
+		types: ^[dynamic]^ast.Expr,
+		seen: ^map[string]bool,
+	) {
+		if name in seen {
+			return
+		}
+		sv, is_struct := sym.value.(SymbolStructValue)
+		if !is_struct {
+			return
+		}
+		if auto_union_embeds(ast_context, sv, target, 0) {
+			seen[name] = true
+			ident := new_type(ast.Ident, v.pos, v.end, ast_context.allocator)
+			ident.name = name
+			append(types, cast(^ast.Expr)ident)
+		}
+	}
+
+	// Current file (covers same-file and unsaved edits the disk index misses).
+	for name in ast_context.globals {
+		ident := new_type(ast.Ident, v.pos, v.end, ast_context.allocator)
+		ident.name = name
+		if sym, ok := resolve_type_expression(ast_context, cast(^ast.Expr)ident); ok {
+			add_variant(ast_context, v, name, sym, target, &types, &seen)
+		}
+	}
+
+	// Rest of the indexed workspace.
+	for _, pkg in indexer.index.collection.packages {
+		for _, sym in pkg.symbols {
+			add_variant(ast_context, v, sym.name, sym, target, &types, &seen)
+		}
+	}
+
+	// Stable order: map iteration above is nondeterministic.
+	slice.sort_by(types[:], proc(a, b: ^ast.Expr) -> bool {
+		return a.derived.(^ast.Ident).name < b.derived.(^ast.Ident).name
+	})
+
+	symbol := Symbol {
+		range = target.range,
+		uri   = ast_context.uri,
+		pkg   = ast_context.current_package,
+		name  = "auto_union",
+		type  = .Union,
+		value = SymbolUnionValue{types = types[:], kind = .Normal},
+	}
+	return symbol, true
 }
 
 resolve_call_directive :: proc(ast_context: ^AstContext, call: ^ast.Call_Expr) -> (Symbol, bool) {
@@ -2223,7 +2318,12 @@ resolve_identifier_expr :: proc(
 		ast_context.call = cast(^ast.Call_Expr)orig_expr
 		defer ast_context.call = old_call
 
-		if _, ok = v.expr.derived.(^ast.Basic_Directive); ok {
+		if ident, is_ident := v.expr.derived.(^ast.Ident);
+		   is_ident && ident.name == "auto_union" && len(v.args) >= 1 {
+			// Methodin: `Name :: auto_union(T)` — resolve the union directly
+			// (the callee `auto_union` is a builtin, not a resolvable symbol).
+			symbol, ok = resolve_auto_union(ast_context, v)
+		} else if _, ok = v.expr.derived.(^ast.Basic_Directive); ok {
 			symbol, ok = resolve_call_directive(ast_context, v)
 		} else if ok = internal_resolve_type_expression(ast_context, v.expr, &symbol); ok {
 			return_types := get_proc_return_types(ast_context, symbol, v, is_mutable)
@@ -2355,6 +2455,15 @@ resolve_global_identifier :: proc(ast_context: ^AstContext, node: ast.Ident, glo
 
 	symbol.type_expr = global.type_expr
 	symbol.value_expr = global.value_expr
+
+	// Methodin: `Name :: auto_union(T)` resolves to a real union, but its source
+	// expr is a call. Drop value_expr so hover renders the resolved union body
+	// (the included structs) instead of the literal `auto_union(T)` call text.
+	if _, is_union := symbol.value.(SymbolUnionValue); is_union && global.value_expr != nil {
+		if _, is_call := global.value_expr.derived.(^ast.Call_Expr); is_call {
+			symbol.value_expr = nil
+		}
+	}
 
 	return symbol, ok
 }
