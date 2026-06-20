@@ -96,6 +96,25 @@ get_code_actions :: proc(document: ^Document, range: common.Range, config: ^comm
 		)
 	}
 
+	if config.enable_code_action_extract_variable {
+		add_extract_variable_action(
+			document,
+			range,
+			strings.clone(document.uri.uri, context.temp_allocator),
+			&actions,
+		)
+	}
+
+	if config.enable_code_action_extract_method {
+		add_extract_method_action(
+			&ast_context,
+			document,
+			range,
+			strings.clone(document.uri.uri, context.temp_allocator),
+			&actions,
+		)
+	}
+
 	return actions[:], true
 }
 

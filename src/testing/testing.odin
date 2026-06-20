@@ -585,6 +585,42 @@ expect_rename_edit_count :: proc(t: ^testing.T, src: ^Source, new_text: string, 
 	}
 }
 
+// Runs code actions over an explicit selection range and returns the TextEdits
+// of the action with the given title (across all files, in document order).
+// Asserts the action exists. Edits are valid until teardown — assert inside the
+// supplied `check` callback.
+expect_action_edits :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	range: common.Range,
+	action_title: string,
+	check: proc(t: ^testing.T, edits: []server.TextEdit),
+) {
+	setup(src)
+	defer teardown(src)
+
+	actions, ok := server.get_code_actions(src.document, range, &src.config)
+	if !ok {
+		log.error("Failed to get code actions")
+		return
+	}
+
+	for action in actions {
+		if action.title == action_title {
+			edits := make([dynamic]server.TextEdit, context.temp_allocator)
+			for _, file_edits in action.edit.changes {
+				for e in file_edits {
+					append(&edits, e)
+				}
+			}
+			check(t, edits[:])
+			return
+		}
+	}
+
+	log.errorf("Action %q not offered; got %v", action_title, actions)
+}
+
 expect_action :: proc(t: ^testing.T, src: ^Source, expect_action_names: []string) {
 	setup(src)
 	defer teardown(src)
