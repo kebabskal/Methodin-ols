@@ -101,6 +101,7 @@ FileResolveData :: struct {
 	position_context: ^DocumentPositionContext,
 	flag:             ResolveReferenceFlag,
 	target_name:      string,
+	impl_block:       ^ast.Impl_Block, // set while walking an `impl` block's methods
 }
 
 @(private = "file")
@@ -315,6 +316,11 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 		// one of `position_context.struct_type`'s methods.)
 		add_in_struct_method_self_scope(data.ast_context.file, n, data.ast_context, data.position_context)
 
+		// Same, but for a method declared in an `impl <Type> { ... }` block.
+		if data.impl_block != nil {
+			add_impl_method_self_scope(data.ast_context.file, n, data.impl_block, data.ast_context)
+		}
+
 		resolve_node(n.type, data)
 
 		for clause in n.where_clauses {
@@ -525,7 +531,10 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 		// notably imported-package references — are recorded and not reported
 		// as unused imports.
 		resolve_node(n.type_expr, data)
+		old_impl := data.impl_block
+		data.impl_block = n
 		resolve_nodes(n.methods, data)
+		data.impl_block = old_impl
 	case ^ast.Proc_Group:
 		resolve_nodes(n.args, data)
 	case ^ast.Attribute:

@@ -562,6 +562,29 @@ expect_prepare_rename_range :: proc(t: ^testing.T, src: ^Source, expect_range: c
 }
 
 
+// Performs a full rename at the cursor and asserts the total number of edits
+// (occurrences) across all files. Use to verify rename reaches every use site,
+// including ones inside method bodies / impl blocks / UFCS calls.
+expect_rename_edit_count :: proc(t: ^testing.T, src: ^Source, new_text: string, expected_count: int) {
+	setup(src)
+	defer teardown(src)
+
+	workspace, ok := server.get_rename(src.document, new_text, src.position)
+	if !ok {
+		log.error("Rename failed")
+		return
+	}
+
+	count := 0
+	for _, edits in workspace.changes {
+		count += len(edits)
+	}
+
+	if count != expected_count {
+		log.errorf("Expected %d rename edits, got %d (changes=%v)", expected_count, count, workspace.changes)
+	}
+}
+
 expect_action :: proc(t: ^testing.T, src: ^Source, expect_action_names: []string) {
 	setup(src)
 	defer teardown(src)

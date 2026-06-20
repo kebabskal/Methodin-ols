@@ -7,6 +7,7 @@ LocalFlag :: enum {
 	Mutable, // or constant
 	Variable, // or type
 	PolyType,
+	UsingField, // a struct/bit-field member brought into scope via `using` (incl. implicit `using self`)
 }
 
 DocumentLocal :: struct {
@@ -605,7 +606,7 @@ get_locals_using :: proc(expr: ^ast.Expr, ast_context: ^AstContext) {
 					name,
 					false,
 					ast_context.non_mutable_only,
-					{.Mutable},
+					{.Mutable, .UsingField},
 					"",
 					false,
 				)
@@ -624,7 +625,7 @@ get_locals_using :: proc(expr: ^ast.Expr, ast_context: ^AstContext) {
 					name,
 					false,
 					ast_context.non_mutable_only,
-					{.Mutable},
+					{.Mutable, .UsingField},
 					"",
 					false,
 				)
@@ -1263,6 +1264,53 @@ add_in_struct_method_self_scope :: proc(
 	end := proc_lit.end
 	ptr := new_type(ast.Pointer_Type, pos, end, ast_context.allocator)
 	ptr.elem = cast(^ast.Expr)struct_type
+
+	self_ident := new_type(ast.Ident, pos, end, ast_context.allocator)
+	self_ident.name = "self"
+	store_local(ast_context, self_ident, ptr, pos.offset, "self", ast_context.non_mutable_only, false, {.Mutable}, "", true)
+
+	using_stmt: ast.Using_Stmt
+	using_stmt.list = make([]^ast.Expr, 1, context.temp_allocator)
+	using_stmt.list[0] = ptr
+	get_locals_using_stmt(using_stmt, ast_context)
+}
+
+// Methodin: same as add_in_struct_method_self_scope, but for a method declared
+// in an `impl <Type> { ... }` block. The receiver type comes from the block's
+// `type_expr` (e.g. `Dog`) rather than an inline struct literal, so a bare field
+// like `name` inside the body resolves through the implicit `using self: ^Dog`.
+add_impl_method_self_scope :: proc(
+	file: ast.File,
+	proc_lit: ^ast.Proc_Lit,
+	impl_block: ^ast.Impl_Block,
+	ast_context: ^AstContext,
+) {
+	if impl_block == nil || impl_block.type_expr == nil {
+		return
+	}
+
+	// Only act when this proc literal is one of the block's methods.
+	is_method := false
+	method_loop: for m in impl_block.methods {
+		vd, vd_ok := m.derived.(^ast.Value_Decl)
+		if !vd_ok {
+			continue
+		}
+		for v in vd.values {
+			if pl, pl_ok := v.derived.(^ast.Proc_Lit); pl_ok && pl == proc_lit {
+				is_method = true
+				break method_loop
+			}
+		}
+	}
+	if !is_method {
+		return
+	}
+
+	pos := proc_lit.pos
+	end := proc_lit.end
+	ptr := new_type(ast.Pointer_Type, pos, end, ast_context.allocator)
+	ptr.elem = impl_block.type_expr
 
 	self_ident := new_type(ast.Ident, pos, end, ast_context.allocator)
 	self_ident.name = "self"

@@ -3112,6 +3112,18 @@ resolve_location_identifier :: proc(ast_context: ^AstContext, node: ast.Ident) -
 	symbol: Symbol
 
 	if local, ok := get_local(ast_context^, node); ok {
+		// A member brought in via `using` (e.g. a struct field reached through
+		// the implicit `using self` of an in-struct method) resolves to a
+		// synthetic `self.field` selector. Resolve through it to the field's
+		// real declaration so hover/goto and especially rename/references point
+		// at the field itself, not the synthetic receiver.
+		if .UsingField in local.flags && local.rhs != nil {
+			if _, is_sel := local.rhs.derived.(^ast.Selector_Expr); is_sel {
+				if field_symbol, fok := resolve_location_selector(ast_context, local.rhs); fok {
+					return field_symbol, true
+				}
+			}
+		}
 		symbol.range = common.get_token_range(local.lhs, ast_context.file.src)
 		uri := common.create_uri(local.lhs.pos.file, ast_context.allocator)
 		symbol.pkg = ast_context.document_package
