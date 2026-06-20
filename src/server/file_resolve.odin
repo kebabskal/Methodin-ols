@@ -306,6 +306,15 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 
 		get_locals_proc_param_and_results(data.ast_context.file, n^, data.ast_context, data.position_context)
 
+		// Methodin: inside an in-struct method body the struct's fields and a
+		// `self` receiver are in scope via an implicit `using self: ^Struct`.
+		// Bring them in so bare-field identifiers (e.g. `velocity` in
+		// `velocity.normalize()`) resolve during this position-independent walk
+		// — otherwise a package used only through such a field is wrongly
+		// reported as an unused import. (Guarded: no-op unless this proc lit is
+		// one of `position_context.struct_type`'s methods.)
+		add_in_struct_method_self_scope(data.ast_context.file, n, data.ast_context, data.position_context)
+
 		resolve_node(n.type, data)
 
 		for clause in n.where_clauses {

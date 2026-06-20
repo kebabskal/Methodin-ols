@@ -1813,27 +1813,28 @@ resolve_selector_expression :: proc(ast_context: ^AstContext, node: ^ast.Selecto
 			if symbol, ok := resolve_soa_selector_field(ast_context, selector, s.expr, s.len, node.field.name); ok {
 				return symbol, ok
 			}
+			// A field name made entirely of component letters is a swizzle
+			// (`v.xyz`); anything else (`v.normalize`) is not and falls through
+			// to the UFCS fallback below.
+			is_swizzle := len(node.field.name) > 0
 			components_count := 0
 			for c in node.field.name {
-				if c == 'x' || c == 'y' || c == 'z' || c == 'w' || c == 'r' || c == 'g' || c == 'b' || c == 'a' {
+				switch c {
+				case 'x', 'y', 'z', 'w', 'r', 'g', 'b', 'a':
 					components_count += 1
-				} else {
-					return {}, false
+				case:
+					is_swizzle = false
 				}
 			}
 
-			if components_count == 0 {
-				return {}, false
-			}
-
-			if components_count == 1 {
+			if is_swizzle && components_count == 1 {
 				set_ast_package_from_symbol_scoped(ast_context, selector)
 
 				ok := internal_resolve_type_expression(ast_context, s.expr, &symbol)
 				symbol.type = .Field
 				symbol.flags |= {.Mutable}
 				return symbol, ok
-			} else {
+			} else if is_swizzle && components_count > 1 {
 				value := SymbolFixedArrayValue {
 					expr = s.expr,
 					len  = make_int_basic_value(ast_context, components_count, s.len.pos, s.len.end),
@@ -1923,6 +1924,17 @@ resolve_selector_expression :: proc(ast_context: ^AstContext, node: ^ast.Selecto
 		case SymbolMapValue:
 			if node.field.name == "allocator" {
 				return resolve_container_allocator(ast_context, "Raw_Map")
+			}
+		}
+
+		// UFCS fallback: the field isn't a struct/array/swizzle member, but it
+		// may be a free proc reachable on the receiver type via UFCS — its own
+		// package, a `using` chain, or an in-scope import. Resolving it here
+		// (not just in resolve_symbol_selector) also lets find_unused_imports
+		// see imports that are used only through `x.method()`.
+		if node.field != nil {
+			if ufcs_symbol, ok := try_resolve_ufcs_method(ast_context, selector, node.field.name); ok {
+				return ufcs_symbol, true
 			}
 		}
 	}
@@ -3514,6 +3526,88 @@ try_resolve_ufcs_method :: proc(
 			ufcs_enqueue_using_children(ast_context, f, &next)
 		}
 		frontier = next
+	}
+
+	// Final tier: search the packages in scope at the call site — the current
+	// document's own package plus everything it imports — for a free proc (or
+	// proc group) named `field`. This mirrors the compiler's import-search
+	// tier, which lets a method live in a package the receiver type has no
+	// nominal link to, e.g. `v.normalize()` on a [3]f32 resolving to
+	// core:math/linalg.normalize because the file imports linalg.
+	if sym, ok := try_resolve_ufcs_in_scope(ast_context, receiver, field); ok {
+		return sym, true
+	}
+
+	return {}, false
+}
+
+// try_resolve_ufcs_in_scope looks up `field` as a procedure (or procedure
+// group) in the current package and in every imported package. The compiler
+// enforces that the first parameter actually accepts the receiver and reports
+// any cross-package ambiguity; here we only need a navigable target.
+//
+// For a fixed-array receiver we first consult the synthetic `$array` method
+// buckets, which only hold array-receiver procs. That way `v.normalize()` jumps
+// to core:math/linalg.normalize rather than core:math.normalize (which takes a
+// scalar) when both packages are imported — matching the compiler's choice.
+@(private = "file")
+try_resolve_ufcs_in_scope :: proc(
+	ast_context: ^AstContext,
+	receiver: Symbol,
+	field: string,
+) -> (
+	Symbol,
+	bool,
+) {
+	is_proc_symbol :: proc(symbol: Symbol) -> bool {
+		#partial switch _ in symbol.value {
+		case SymbolProcedureValue, SymbolProcedureGroupValue:
+			return true
+		}
+		return false
+	}
+
+	pkgs := make([dynamic]string, context.temp_allocator)
+	if ast_context.current_package != "" {
+		append(&pkgs, ast_context.current_package)
+	}
+	for imp in ast_context.imports {
+		if imp.name == ast_context.current_package {
+			continue
+		}
+		append(&pkgs, imp.name)
+	}
+
+	// Prefer array-receiver procs for array receivers.
+	#partial switch _ in receiver.value {
+	case SymbolFixedArrayValue:
+		method := Method{pkg = "$builtin", name = "$array"}
+		for pkg_path in pkgs {
+			// Core/vendor packages are indexed lazily; make sure the package's
+			// methods are collected before consulting its `$array` bucket.
+			try_build_package(pkg_path)
+			v, ok := indexer.index.collection.packages[pkg_path]
+			if !ok {
+				continue
+			}
+			symbols, syms_ok := v.methods[method]
+			if !syms_ok {
+				continue
+			}
+			for symbol in symbols {
+				if symbol.name == field && !should_skip_private_symbol(symbol, ast_context.current_package, ast_context.uri) {
+					return symbol, true
+				}
+			}
+		}
+	}
+
+	for pkg_path in pkgs {
+		if sym, ok := lookup(field, pkg_path, ast_context.uri); ok {
+			if is_proc_symbol(sym) {
+				return sym, true
+			}
+		}
 	}
 
 	return {}, false

@@ -5356,6 +5356,33 @@ ast_completion_fake_method_simple :: proc(t: ^testing.T) {
 }
 
 @(test)
+ast_completion_fake_method_array_receiver_from_import :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		import "linalg"
+		main :: proc() {
+			v := [3]f32{1, 2, 3}
+			v.{*}
+		}
+		`,
+		packages = {
+			{
+				pkg = "linalg",
+				source = `package linalg
+		vector_normalize :: proc(v: $T/[$N]$E) -> T { return v }
+		normalize :: proc { vector_normalize }
+		`,
+			},
+		},
+		config = {enable_fake_method = true},
+	}
+	// `normalize` has a polymorphic array receiver (no named type), so it is
+	// indexed under the synthetic `$array` key and reachable via the import.
+	// `v.normalize()` is valid UFCS, so it should appear in completion.
+	test.expect_completion_labels(t, &source, ".", {"normalize"})
+}
+
+@(test)
 ast_completion_fake_method_proc_group :: proc(t: ^testing.T) {
 	source := test.Source {
 		main = `package test

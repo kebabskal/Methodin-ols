@@ -628,6 +628,22 @@ get_method_from_first_arg :: proc(
 ) {
 	expr, _, unwrap_ok := unwrap_pointer_ident(first_arg_type)
 	if !unwrap_ok {
+		// A proc whose first parameter is a fixed array (or a polymorphic
+		// array, e.g. `proc(v: $T/[$N]$E)` as in core:math/linalg) has no
+		// named receiver to key on, but UFCS still reaches it through an
+		// in-scope import. Index such procs under a synthetic `$array` key so
+		// completion can offer them on array-typed receivers.
+		if raw, _, raw_ok := unwrap_pointer_expr(first_arg_type); raw_ok {
+			r := raw
+			if poly, is_poly := r.derived.(^ast.Poly_Type); is_poly && poly.specialization != nil {
+				r = poly.specialization
+			}
+			if _, is_array := r.derived.(^ast.Array_Type); is_array {
+				method.pkg = "$builtin"
+				method.name = "$array"
+				return method, true
+			}
+		}
 		return {}, false
 	}
 

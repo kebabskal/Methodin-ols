@@ -716,7 +716,7 @@ request_initialize :: proc(
 	config.file_log = false
 	config.odin_command = ""
 	config.checker_args = ""
-	config.enable_fake_method = false
+	config.enable_fake_method = true // Methodin: methods/UFCS are the point of this fork; on by default.
 	config.enable_procedure_snippet = true
 	config.enable_checker_only_saved = true
 	config.enable_checker_workspace_diagnostics = false

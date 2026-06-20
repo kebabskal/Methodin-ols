@@ -74,6 +74,57 @@ append_method_completion :: proc(
 		collect_methods(ast_context, position_context, method, results)
 	}
 
+	// Fixed-array receivers (e.g. linalg vectors) have no named type to key
+	// methods on, but UFCS reaches array-receiver free procs through any
+	// in-scope import. Offer those, indexed under the synthetic `$array` key.
+	#partial switch _ in selector_symbol.value {
+	case SymbolFixedArrayValue:
+		collect_in_scope_array_methods(ast_context, position_context, results)
+	}
+}
+
+@(private = "file")
+collect_in_scope_array_methods :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	results: ^[dynamic]CompletionResult,
+) {
+	method := Method{pkg = "$builtin", name = "$array"}
+
+	pkgs := make([dynamic]string, context.temp_allocator)
+	if ast_context.current_package != "" {
+		append(&pkgs, ast_context.current_package)
+	}
+	for imp in ast_context.imports {
+		append(&pkgs, imp.name)
+	}
+
+	for pkg_path in pkgs {
+		// Ensure the package is indexed — core/vendor packages are built lazily,
+		// and their `$array` method bucket only exists once collected.
+		try_build_package(pkg_path)
+		v, ok := indexer.index.collection.packages[pkg_path]
+		if !ok {
+			continue
+		}
+		symbols, syms_ok := &v.methods[method]
+		if !syms_ok {
+			continue
+		}
+		for &symbol in symbols {
+			if should_skip_private_symbol(symbol, ast_context.current_package, ast_context.uri) {
+				continue
+			}
+			resolve_unresolved_symbol(ast_context, &symbol)
+
+			#partial switch &sym_value in symbol.value {
+			case SymbolProcedureValue:
+				add_proc_method_completion(ast_context, &symbol, sym_value, results)
+			case SymbolProcedureGroupValue:
+				add_proc_group_method_completion(ast_context, &symbol, sym_value, results)
+			}
+		}
+	}
 }
 
 @(private = "file")
