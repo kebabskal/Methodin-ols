@@ -806,6 +806,14 @@ get_document_position_node :: proc(node: ^ast.Node, position_context: ^DocumentP
 	case ^ast.Foreign_Import_Decl:
 		get_document_position(n.name, position_context)
 		get_document_position(n.fullpaths, position_context)
+	case ^ast.Impl_Block:
+		// Methodin: `impl <Type> { name :: proc(...) {...} }`. Descend into the
+		// target type and the method bodies so a cursor inside one sets
+		// position_context.function/identifier — without this, completion,
+		// hover, go-to-definition and rename all fail inside `impl` methods the
+		// same way they did inside in-struct methods before n.methods was walked.
+		get_document_position(n.type_expr, position_context)
+		get_document_position(n.methods, position_context)
 	case ^ast.Proc_Group:
 		get_document_position(n.args, position_context)
 	case ^ast.Attribute:
