@@ -1595,7 +1595,7 @@ auto_union_embeds :: proc(ast_context: ^AstContext, sv: SymbolStructValue, targe
 // `using`-embeds T at offset 0 (directly or transitively). The variants are
 // listed as plain idents so hover/go-to-definition/type-switch reuse the normal
 // union machinery, and hovering the alias reveals which structs are included.
-resolve_auto_union :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr) -> (Symbol, bool) {
+resolve_auto_union :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr, name := "") -> (Symbol, bool) {
 	target, ok := resolve_type_expression(ast_context, v.args[0])
 	if !ok {
 		return {}, false
@@ -1629,11 +1629,11 @@ resolve_auto_union :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr) -> (Symb
 	}
 
 	// Current file (covers same-file and unsaved edits the disk index misses).
-	for name in ast_context.globals {
+	for gname in ast_context.globals {
 		ident := new_type(ast.Ident, v.pos, v.end, ast_context.allocator)
-		ident.name = name
+		ident.name = gname
 		if sym, ok := resolve_type_expression(ast_context, cast(^ast.Expr)ident); ok {
-			add_variant(ast_context, v, name, sym, target, &types, &seen)
+			add_variant(ast_context, v, gname, sym, target, &types, &seen)
 		}
 	}
 
@@ -1649,13 +1649,16 @@ resolve_auto_union :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr) -> (Symb
 		return a.derived.(^ast.Ident).name < b.derived.(^ast.Ident).name
 	})
 
+	union_name := name != "" ? name : "auto_union"
 	symbol := Symbol {
-		range = target.range,
-		uri   = ast_context.uri,
-		pkg   = ast_context.current_package,
-		name  = "auto_union",
-		type  = .Union,
-		value = SymbolUnionValue{types = types[:], kind = .Normal},
+		range     = target.range,
+		uri       = ast_context.uri,
+		pkg       = ast_context.current_package,
+		name      = union_name,
+		type_name = union_name,
+		type_pkg  = ast_context.current_package,
+		type      = .Union,
+		value     = SymbolUnionValue{types = types[:], kind = .Normal},
 	}
 	return symbol, true
 }
@@ -2322,7 +2325,9 @@ resolve_identifier_expr :: proc(
 		   is_ident && ident.name == "auto_union" && len(v.args) >= 1 {
 			// Methodin: `Name :: auto_union(T)` — resolve the union directly
 			// (the callee `auto_union` is a builtin, not a resolvable symbol).
-			symbol, ok = resolve_auto_union(ast_context, v)
+			// Pass the alias name so the union is reported as `Name`, not the
+			// literal "auto_union".
+			symbol, ok = resolve_auto_union(ast_context, v, name)
 		} else if _, ok = v.expr.derived.(^ast.Basic_Directive); ok {
 			symbol, ok = resolve_call_directive(ast_context, v)
 		} else if ok = internal_resolve_type_expression(ast_context, v.expr, &symbol); ok {

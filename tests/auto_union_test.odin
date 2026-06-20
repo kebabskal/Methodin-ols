@@ -22,3 +22,20 @@ auto_union_hover_lists_variants :: proc(t: ^testing.T) {
 	}
 	test.expect_hover(t, &source, "test.BaseEntity :: union {\n\tEnemy,\n\tExploderEnemy,\n\tPlayer,\n}")
 }
+
+// A variable of the auto_union type should report the alias name, not the
+// literal builtin name "auto_union".
+@(test)
+auto_union_variable_reports_alias_name :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Entity :: struct { hp: int }
+		Player :: struct { using entity: Entity, score: int }
+		BaseEntity :: auto_union(Entity)
+		main :: proc() {
+			e{*}: BaseEntity
+		}
+		`,
+	}
+	test.expect_hover(t, &source, "test.e: test.BaseEntity")
+}
