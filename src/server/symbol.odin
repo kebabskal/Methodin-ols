@@ -110,6 +110,7 @@ SymbolUnionValue :: struct {
 	kind:          ast.Union_Type_Kind,
 	align:         ^ast.Expr,
 	where_clauses: []^ast.Expr,
+	using_base:    ^ast.Expr, // Methodin: for `auto_union(T)`, the offset-0 base T whose members are promoted
 }
 
 SymbolDynamicArrayValue :: struct {

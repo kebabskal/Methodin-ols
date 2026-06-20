@@ -1658,7 +1658,7 @@ resolve_auto_union :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr, name := 
 		type_name = union_name,
 		type_pkg  = ast_context.current_package,
 		type      = .Union,
-		value     = SymbolUnionValue{types = types[:], kind = .Normal},
+		value     = SymbolUnionValue{types = types[:], kind = .Normal, using_base = v.args[0]},
 	}
 	return symbol, true
 }
@@ -1953,6 +1953,18 @@ resolve_selector_expression :: proc(ast_context: ^AstContext, node: ^ast.Selecto
 				selector_expr.field = node.field
 				ok := internal_resolve_type_expression(ast_context, selector_expr, &symbol)
 				return symbol, ok
+			}
+		case SymbolUnionValue:
+			// Methodin: `auto_union(T)` promotes T's members — resolve the field
+			// (or method) against the offset-0 base T.
+			if s.using_base != nil {
+				base_sel := new_type(ast.Selector_Expr, node.pos, node.end, ast_context.allocator)
+				base_sel.expr = s.using_base
+				base_sel.field = node.field
+				base_sel.op = node.op
+				if ok := internal_resolve_type_expression(ast_context, base_sel, &symbol); ok {
+					return symbol, true
+				}
 			}
 		case SymbolStructValue:
 			for name, i in s.names {

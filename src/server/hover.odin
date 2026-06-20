@@ -315,6 +315,14 @@ get_hover_information :: proc(document: ^Document, position: common.Position) ->
 			}
 		}
 
+		// Methodin: `auto_union(T)` promotes T's members — hover the field/method
+		// against the offset-0 base struct.
+		if uv, is_union := selector.value.(SymbolUnionValue); is_union && uv.using_base != nil {
+			if base, bok := resolve_type_expression(&ast_context, uv.using_base); bok {
+				selector = base
+			}
+		}
+
 		ast_context.current_package = selector.pkg
 
 		// TODO: Use resolve_selector_expression for this?

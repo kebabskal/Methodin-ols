@@ -803,6 +803,32 @@ get_selector_completion :: proc(
 	case SymbolUnionValue:
 		is_incomplete = false
 
+		// Methodin: `auto_union(T)` promotes T's members — offer the base
+		// struct's fields and methods directly on the union value.
+		if v.using_base != nil {
+			if base, bok := resolve_type_expression(ast_context, v.using_base); bok {
+				set_ast_package_from_symbol_scoped(ast_context, base)
+				if config.enable_fake_method {
+					append_method_completion(ast_context, base, position_context, results, receiver)
+				}
+				if bs, sok := base.value.(SymbolStructValue); sok {
+					for name, i in bs.names {
+						if name == "_" {
+							continue
+						}
+						if is_struct_field_hidden(name, base, ast_context, config) {
+							continue
+						}
+						if fsym, fok := resolve_type_expression(ast_context, bs.types[i]); fok {
+							construct_struct_field_symbol(&fsym, base.name, bs, i)
+							append(results, CompletionResult{symbol = fsym})
+						}
+					}
+				}
+			}
+			set_ast_package_from_symbol_scoped(ast_context, selector)
+		}
+
 		append_magic_union_completion(position_context, selector, results)
 
 		for type in v.types {

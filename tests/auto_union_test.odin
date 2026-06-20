@@ -39,3 +39,42 @@ auto_union_variable_reports_alias_name :: proc(t: ^testing.T) {
 	}
 	test.expect_hover(t, &source, "test.e: test.BaseEntity")
 }
+
+// `e.` on an auto_union value should offer the promoted base members.
+@(test)
+auto_union_completion_promotes_base_members :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Entity :: struct {
+			hp:    int,
+			alive: bool,
+			take_damage :: proc(amount: int) { hp -= amount },
+		}
+		Player :: struct { using entity: Entity, score: int }
+		BaseEntity :: auto_union(Entity)
+		main :: proc() {
+			e: BaseEntity
+			e.{*}
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"hp", "alive"})
+}
+
+// `e.hp` on an auto_union value should resolve to the promoted base field.
+@(test)
+auto_union_resolves_promoted_field :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Entity :: struct { hp: int }
+		Player :: struct { using entity: Entity, score: int }
+		BaseEntity :: auto_union(Entity)
+		main :: proc() {
+			e: BaseEntity
+			e.h{*}p = 1
+		}
+		`,
+	}
+	test.expect_hover(t, &source, "Entity.hp: int")
+}
