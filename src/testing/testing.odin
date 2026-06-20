@@ -596,6 +596,20 @@ expect_action :: proc(t: ^testing.T, src: ^Source, expect_action_names: []string
 	}
 }
 
+// Runs the server's document-formatting path (the same one the editor uses) and
+// returns the formatted text. Goes through the full document refresh, so any AST
+// mutations OLS applies before formatting are exercised.
+format_document_for_test :: proc(src: ^Source) -> string {
+	setup(src)
+	defer teardown(src)
+
+	edits, ok := server.get_complete_format(src.document, &src.config)
+	if !ok || len(edits) == 0 {
+		return ""
+	}
+	return edits[len(edits) - 1].newText
+}
+
 // Asserts that exactly the given import base names are reported as unused (order-insensitive).
 expect_unused_imports :: proc(t: ^testing.T, src: ^Source, expected_unused: []string) {
 	setup(src)

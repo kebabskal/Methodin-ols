@@ -1822,6 +1822,13 @@ visit_expr :: proc(
 			document = enforce_break(document, Document_Group_Options{id = "call_expr"})
 		} else if contains_do {
 			document = enforce_fit(document)
+		} else if len(v.args) > 0 && v.close.line > v.open.line {
+			// gofmt-style trailing-paren rule (same as Paren_Expr below): if the
+			// user put the closing `)` on its own line, keep the call broken across
+			// lines even when it would fit. Lets the user opt into a vertical
+			// argument layout by where they place `)`; a single-line call (close on
+			// the same line as open) still collapses through the group path.
+			document = enforce_break(document, Document_Group_Options{id = "call_expr"})
 		} else {
 			document = group(document, Document_Group_Options{id = "call_expr"})
 		}
@@ -1915,6 +1922,12 @@ visit_expr :: proc(
 
 		should_newline |= contains_comments_in_range(p, v.pos, v.end)
 
+		// gofmt-style trailing-brace rule (mirrors Call_Expr / Paren_Expr): if the
+		// user put the closing `}` on its own line, keep the literal broken across
+		// lines even when it would fit and even for positional elements (e.g.
+		// `vec3{x, y, z}`). A single-line literal still collapses.
+		should_newline |= len(v.elems) > 0 && v.close.line > v.open.line
+
 		if should_newline {
 			document = cons_with_nopl(document, visit_begin_brace(p, v.pos, .Comp_Lit))
 			inner_document := empty()
@@ -1927,6 +1940,14 @@ visit_expr :: proc(
 				inner_document, _ = visit_comments(p, v.end)
 			}
 			document = cons(document, nest(inner_document), newline(1), text_position(p, "}", v.end))
+
+			// A binary expression nests its right operand (see visit_binary_expr);
+			// undo that extra indentation here, the same way the Call_Expr case
+			// does, so a multi-line literal in `a * T{...}` lines up with the
+			// statement rather than the operator.
+			if called_from == .Binary_Expr {
+				document = escape_nest(document)
+			}
 		} else {
 			break_string := " " if v.type != nil else ""
 			if len(v.elems) > 0 {
