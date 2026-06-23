@@ -1710,6 +1710,17 @@ get_identifier_completion :: proc(
 		for r in fuzzy_results {
 			r := r
 			resolve_unresolved_symbol(ast_context, &r.symbol)
+			// The current document is now collected into the index (so its own
+			// methods complete), which means its globals can also surface here —
+			// but they're added below from `ast_context.globals`, better resolved
+			// (e.g. `x := get_foo()` shows `string`, not `get_foo()`). Skip the
+			// index copy by name+package; the uri/path check alone is unreliable
+			// because the open document's indexed uri may not string-match fullpath.
+			if r.symbol.pkg == ast_context.document_package {
+				if _, is_own_global := ast_context.globals[r.symbol.name]; is_own_global {
+					continue
+				}
+			}
 			uri, _ := common.parse_uri(r.symbol.uri, context.temp_allocator)
 			if uri.path != ast_context.fullpath {
 				append(results, CompletionResult{score = r.score, symbol = r.symbol})
@@ -1846,6 +1857,19 @@ get_identifier_completion :: proc(
 				append(results, CompletionResult{score = score * 1.1, snippet = v, symbol = symbol})
 			}
 		}
+	}
+
+	// Methodin: inside an in-struct / impl method body a sibling method is callable
+	// bare (the compiler rewrites `foo()` to `self.foo()`). The fuzzy/global/local
+	// passes above never surface methods — they live in the method index, not in
+	// pkg.symbols — so offer the enclosing struct's methods explicitly here.
+	if config.enable_fake_method && position_context.function != nil && position_context.struct_name != "" {
+		struct_symbol := Symbol {
+			name = position_context.struct_name,
+			pkg  = ast_context.document_package,
+			type = .Struct,
+		}
+		append_method_completion(ast_context, struct_symbol, position_context, results, "")
 	}
 
 	return is_incomplete

@@ -331,6 +331,15 @@ document_refresh :: proc(document: ^Document, config: ^common.Config, writer: ^W
 	remove_diagnostics(.Syntax, uri.uri)
 	check_unused_imports(document, config)
 
+	// Methodin: collect the open document into the index so its OWN methods are
+	// immediately visible. Completion and UFCS resolution read methods only from
+	// the index (regular symbols come from the live AST), and parsing alone never
+	// populates it — so a file's current/just-typed in-struct, impl, and UFCS
+	// methods would otherwise never complete until a workspace reindex.
+	// `index_file` clears this file's prior index entries first, so re-running on
+	// every change neither duplicates method buckets nor leaks symbols.
+	index_file(document.uri, string(document.text[:document.used_text]))
+
 	if writer != nil && !config.disable_parser_errors {
 		document.diagnosed_errors = true
 

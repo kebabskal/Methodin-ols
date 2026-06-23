@@ -452,6 +452,17 @@ is_assign_statement_ending_with_call :: proc(stmt: ^ast.Stmt) -> bool {
 }
 
 @(private)
+// True when the condition is a parenthesized expression the user laid out
+// with its closing `)` on its own line (the same gofmt-style opt-in used for
+// `Paren_Expr` / `Comp_Lit` / `Call_Expr`). Such a condition already breaks
+// itself vertically, so the `if` should not also `hang` it.
+is_paren_broken_cond :: proc(expr: ^ast.Expr) -> bool {
+	if paren, ok := expr.derived.(^ast.Paren_Expr); ok {
+		return paren.close.line > paren.open.line
+	}
+	return false
+}
+
 is_value_expression_call :: proc(expr: ^ast.Expr) -> bool {
 	#partial switch v in expr.derived {
 	case ^ast.Call_Expr, ^ast.Selector_Call_Expr:
@@ -1036,6 +1047,12 @@ visit_stmt :: proc(
 				document,
 				group(cons(begin_document, if_break_or(end_document, break_end_document, "init"))),
 			)
+		} else if v.init == nil && v.cond != nil && is_paren_broken_cond(v.cond) {
+			// The condition's `Paren_Expr` already breaks vertically: contents
+			// nested one level, the `)` on its own line. Skip the hang(3)
+			// alignment so the contents indent one level past `if` and the `)`
+			// lines up with the `if` rather than the opening `(`.
+			document = cons(document, group(cons(begin_document, end_document)))
 		} else {
 			document = cons(document, group(hang(3, cons(begin_document, end_document))))
 		}

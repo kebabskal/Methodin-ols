@@ -40,6 +40,8 @@ DocumentPositionContext :: struct {
 	parent_comp_lit:        ^ast.Comp_Lit, //used for completion
 	basic_lit:              ^ast.Basic_Lit,
 	struct_type:            ^ast.Struct_Type,
+	struct_name:            string, // Methodin: name of the decl owning struct_type, so in-struct method bodies can reach the name-keyed method index
+	impl_block:             ^ast.Impl_Block, // Methodin: the enclosing `impl <Type> { ... }`, so a cursor on an impl method's declaration name is renameable
 	union_type:             ^ast.Union_Type,
 	bitset_type:            ^ast.Bit_Set_Type,
 	enum_type:              ^ast.Enum_Type,
@@ -812,6 +814,7 @@ get_document_position_node :: proc(node: ^ast.Node, position_context: ^DocumentP
 		// position_context.function/identifier — without this, completion,
 		// hover, go-to-definition and rename all fail inside `impl` methods the
 		// same way they did inside in-struct methods before n.methods was walked.
+		position_context.impl_block = n
 		get_document_position(n.type_expr, position_context)
 		get_document_position(n.methods, position_context)
 	case ^ast.Proc_Group:
@@ -850,6 +853,21 @@ get_document_position_node :: proc(node: ^ast.Node, position_context: ^DocumentP
 		get_document_position(n.elem, position_context)
 	case ^ast.Struct_Type:
 		position_context.struct_type = n
+		// Methodin: record the struct's declared name (the enclosing `Name :: struct`
+		// decl, still current here — it's overwritten once we descend into a method's
+		// own value-decl) so completion inside a method body can look methods up by
+		// name. Methods are indexed by struct name, but `self` is typed as the inline
+		// struct node, which carries no name.
+		if vd := position_context.value_decl; vd != nil && len(vd.names) > 0 {
+			for v in vd.values {
+				if v == cast(^ast.Expr)n {
+					if ident, ok := vd.names[0].derived.(^ast.Ident); ok {
+						position_context.struct_name = ident.name
+					}
+					break
+				}
+			}
+		}
 		get_document_position(n.poly_params, position_context)
 		get_document_position(n.align, position_context)
 		for clause in n.where_clauses {

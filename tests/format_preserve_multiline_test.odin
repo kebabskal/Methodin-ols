@@ -49,6 +49,33 @@ f :: proc() {
 	testing.expect(t, strings.contains(out, "Vec3{\n") || strings.contains(out, "Vec3 {\n"), "comp lit was collapsed")
 }
 
+// When an `if` condition is a parenthesized expression the user laid out with
+// its closing `)` on its own line, the `if` must not align (hang) the broken
+// paren to the opening `(`. Instead the condition body indents one level past
+// `if` and the `)` lines up with the `if`.
+@(test)
+format_if_paren_cond_aligns_to_if :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package main
+
+f :: proc() {
+	if (
+		alpha && beta && gamma
+	) {
+		g()
+	}
+}
+`,
+		packages = {},
+	}
+	out := test.format_document_for_test(&source)
+	// Body of the condition is one indent past the `if` (two tabs), not aligned
+	// to the opening paren (which would be a tab followed by spaces).
+	testing.expect(t, strings.contains(out, "\n\t\talpha &&\n"), "condition body not nested one level")
+	// Closing paren sits at the `if` indentation (one tab), then ` {`.
+	testing.expect(t, strings.contains(out, "\n\t) {\n"), "closing paren not aligned with if")
+}
+
 @(test)
 format_collapses_single_line :: proc(t: ^testing.T) {
 	source := test.Source {

@@ -1263,7 +1263,17 @@ add_in_struct_method_self_scope :: proc(
 	pos := proc_lit.pos
 	end := proc_lit.end
 	ptr := new_type(ast.Pointer_Type, pos, end, ast_context.allocator)
-	ptr.elem = cast(^ast.Expr)struct_type
+	// Prefer the struct's *named* type (`^Rect`) over the inline struct node when
+	// the name is known: methods are indexed by struct name, so a named receiver
+	// lets both `self.<method>` and bare-identifier completion reach them. Fields
+	// resolve either way. Fall back to the inline node for anonymous structs.
+	if document_position.struct_name != "" {
+		named := new_type(ast.Ident, pos, end, ast_context.allocator)
+		named.name = document_position.struct_name
+		ptr.elem = cast(^ast.Expr)named
+	} else {
+		ptr.elem = cast(^ast.Expr)struct_type
+	}
 
 	self_ident := new_type(ast.Ident, pos, end, ast_context.allocator)
 	self_ident.name = "self"

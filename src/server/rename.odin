@@ -138,6 +138,35 @@ prepare_rename :: proc(
 				return get_struct_field_type_position(ast_context, position_context, node)
 			}
 		}
+		// Methodin: allow prepareRename on an in-struct method's declaration name.
+		for m in position_context.struct_type.methods {
+			vd, vd_ok := m.derived.(^ast.Value_Decl)
+			if !vd_ok || len(vd.names) != 1 {
+				continue
+			}
+			if position_in_node(vd.names[0], position_context.position) {
+				symbol = Symbol {
+					range = common.get_token_range(vd.names[0], ast_context.file.src),
+				}
+				return symbol, true
+			}
+		}
+	}
+
+	// Methodin: allow prepareRename on an `impl <Type> { ... }` method's name.
+	if position_context.impl_block != nil {
+		for m in position_context.impl_block.methods {
+			vd, vd_ok := m.derived.(^ast.Value_Decl)
+			if !vd_ok || len(vd.names) != 1 {
+				continue
+			}
+			if position_in_node(vd.names[0], position_context.position) {
+				symbol = Symbol {
+					range = common.get_token_range(vd.names[0], ast_context.file.src),
+				}
+				return symbol, true
+			}
+		}
 	}
 
 	if position_context.enum_type != nil {

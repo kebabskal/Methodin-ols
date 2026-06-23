@@ -185,6 +185,42 @@ prepare_references :: proc(
 					}
 				}
 			}
+			// Methodin: cursor on an in-struct method's declaration name. Resolve to
+			// the name token itself — the canonical method symbol that call sites
+			// (`x.method`) and `emit_method_decl_name` also resolve to — so the whole
+			// method renames together.
+			for m in position_context.struct_type.methods {
+				vd, vd_ok := m.derived.(^ast.Value_Decl)
+				if !vd_ok || len(vd.names) != 1 {
+					continue
+				}
+				if position_in_node(vd.names[0], position_context.position) {
+					symbol = Symbol {
+						range = common.get_token_range(vd.names[0], ast_context.file.src),
+						pkg   = ast_context.current_package,
+						uri   = document.uri.uri,
+					}
+					return symbol, .Identifier, true
+				}
+			}
+		}
+
+		// Methodin: same, for a method declared in an `impl <Type> { ... }` block.
+		if position_context.impl_block != nil {
+			for m in position_context.impl_block.methods {
+				vd, vd_ok := m.derived.(^ast.Value_Decl)
+				if !vd_ok || len(vd.names) != 1 {
+					continue
+				}
+				if position_in_node(vd.names[0], position_context.position) {
+					symbol = Symbol {
+						range = common.get_token_range(vd.names[0], ast_context.file.src),
+						pkg   = ast_context.current_package,
+						uri   = document.uri.uri,
+					}
+					return symbol, .Identifier, true
+				}
+			}
 		}
 
 		if position_context.identifier != nil {

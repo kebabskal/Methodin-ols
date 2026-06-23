@@ -178,7 +178,38 @@ local_scope_enum :: proc(data: ^FileResolveData, enum_type: ^ast.Enum_Type) {
 	get_locals_enum_fields(enum_type, data.ast_context, data.position_context)
 }
 
+// Methodin: emit the declaration-name token of each in-struct / impl method as a
+// rename/references occurrence. Its symbol is the name token itself, which is
+// exactly what the method index stores and what `x.method` call sites resolve to,
+// so identity matching ties the declaration and every call site together (and
+// keeps same-named methods on different structs apart — different token ranges).
 @(private = "file")
+emit_method_decl_name :: proc(methods: []^ast.Stmt, data: ^FileResolveData) {
+	for m in methods {
+		vd, vd_ok := m.derived.(^ast.Value_Decl)
+		if !vd_ok || len(vd.names) != 1 {
+			continue
+		}
+		name_ident, ni_ok := vd.names[0].derived.(^ast.Ident)
+		if !ni_ok {
+			continue
+		}
+		if data.target_name != "" && name_ident.name != data.target_name {
+			continue
+		}
+		data.symbols[cast(uintptr)vd.names[0]] = SymbolAndNode {
+			node   = vd.names[0],
+			symbol = Symbol {
+				range = common.get_token_range(vd.names[0], string(data.document.text)),
+				uri = strings.clone(
+					common.create_uri(name_ident.pos.file, data.ast_context.allocator).uri,
+					data.ast_context.allocator,
+				),
+			},
+		}
+	}
+}
+
 resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 	if node == nil {
 		return
@@ -196,6 +227,32 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 					data.symbols[cast(uintptr)node] = SymbolAndNode {
 						node   = n,
 						symbol = symbol,
+					}
+				} else if st := data.position_context.struct_type; st != nil {
+					// Methodin: an unresolved bare ident inside a method body that
+					// names a sibling method is a bare method call (the compiler
+					// rewrites `foo()` to `self.foo()`). Resolve it to that method's
+					// declaration token so it renames together with the method.
+					for m in st.methods {
+						vd, vd_ok := m.derived.(^ast.Value_Decl)
+						if !vd_ok || len(vd.names) != 1 {
+							continue
+						}
+						mname, mok := vd.names[0].derived.(^ast.Ident)
+						if !mok || mname.name != n.name {
+							continue
+						}
+						data.symbols[cast(uintptr)node] = SymbolAndNode {
+							node   = n,
+							symbol = Symbol {
+								range = common.get_token_range(vd.names[0], string(data.document.text)),
+								uri = strings.clone(
+									common.create_uri(mname.pos.file, data.ast_context.allocator).uri,
+									data.ast_context.allocator,
+								),
+							},
+						}
+						break
 					}
 				}
 			}
@@ -534,6 +591,9 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 		old_impl := data.impl_block
 		data.impl_block = n
 		resolve_nodes(n.methods, data)
+		if data.flag != .None {
+			emit_method_decl_name(n.methods, data)
+		}
 		data.impl_block = old_impl
 	case ^ast.Proc_Group:
 		resolve_nodes(n.args, data)
@@ -600,6 +660,13 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 					}
 				}
 			}
+			// Methodin: emit each in-struct method's *declaration name* token as an
+			// occurrence whose symbol is the canonical method symbol (the name token
+			// itself — exactly what the index stores and what `x.method` call sites
+			// resolve to). Without this, rename/references would find call sites but
+			// never the declaration. Same-named methods on other structs get a
+			// different token range, so identity matching keeps them separate.
+			emit_method_decl_name(n.methods, data)
 		}
 	case ^ast.Union_Type:
 		data.position_context.union_type = n
