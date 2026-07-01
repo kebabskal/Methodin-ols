@@ -34,6 +34,82 @@ Completion_Type :: enum {
 	Package,
 }
 
+// Methodin: build a "scaffold a new file" completion — `package <dir>` plus a
+// struct named after the file (PascalCase). Offered only when the file has no
+// package declaration yet.
+build_file_scaffold_completion :: proc(document: ^Document) -> (CompletionItem, bool) {
+	if document.fullpath == "" {
+		return {}, false
+	}
+
+	dir := filepath.dir(document.fullpath)
+	pkg := scaffold_sanitize_package(filepath.base(dir))
+	if pkg == "" {
+		pkg = "main"
+	}
+
+	base := filepath.base(document.fullpath)
+	if strings.has_suffix(base, ".odin") {
+		base = base[:len(base) - len(".odin")]
+	}
+	struct_name := scaffold_pascal_case(base)
+	if struct_name == "" {
+		return {}, false
+	}
+
+	insert := strings.concatenate(
+		{"package ", pkg, "\n\n", struct_name, " :: struct {\n\t$0\n}\n"},
+		context.temp_allocator,
+	)
+
+	item := CompletionItem {
+		label            = "package",
+		kind             = .Snippet,
+		detail           = strings.concatenate({"scaffold file: package ", pkg, " + ", struct_name, " struct"}, context.temp_allocator),
+		insertText       = insert,
+		insertTextFormat = .Snippet,
+	}
+	return item, true
+}
+
+// Lowercase, replace any non-identifier char with `_`, so a directory like
+// `odin-daggers` yields a valid package name `odin_daggers`.
+@(private = "file")
+scaffold_sanitize_package :: proc(name: string) -> string {
+	sb := strings.builder_make(context.temp_allocator)
+	for r in name {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			strings.write_rune(&sb, r + 32)
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_':
+			strings.write_rune(&sb, r)
+		case:
+			strings.write_rune(&sb, '_')
+		}
+	}
+	return strings.to_string(sb)
+}
+
+// `enemy_base` / `fps-camera` -> `EnemyBase` / `FpsCamera`.
+@(private = "file")
+scaffold_pascal_case :: proc(name: string) -> string {
+	sb := strings.builder_make(context.temp_allocator)
+	next_upper := true
+	for r in name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			if next_upper && r >= 'a' && r <= 'z' {
+				strings.write_rune(&sb, r - 32)
+			} else {
+				strings.write_rune(&sb, r)
+			}
+			next_upper = false
+		} else {
+			next_upper = true // word boundary (`_`, `-`, space, …)
+		}
+	}
+	return strings.to_string(sb)
+}
+
 get_completion_list :: proc(
 	document: ^Document,
 	position: common.Position,
@@ -44,6 +120,16 @@ get_completion_list :: proc(
 	bool,
 ) {
 	list: CompletionList
+
+	// Methodin: a file with no `package` declaration is fresh/empty — offer a
+	// scaffold that fills in `package <dir>` plus a struct named after the file,
+	// so new files start ready to go.
+	if document.ast.pkg_decl == nil {
+		if item, ok := build_file_scaffold_completion(document); ok {
+			list.items = []CompletionItem{item}
+			return list, true
+		}
+	}
 
 	position_context, ok := get_document_position_context(document, position, .Completion)
 

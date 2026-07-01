@@ -69,6 +69,126 @@ add_extract_variable_action :: proc(
 	)
 }
 
+// Extract to struct field: inside an in-struct method body, hoist the selected
+// expression onto a new field of the enclosing struct (placed after the last
+// field, before the methods), replace the occurrence with the bare field name
+// (reachable via the method's `using self`), and assign the value at the use
+// site. Great for promoting a computed local into shared per-instance state.
+@(private = "package")
+add_extract_field_action :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	document: ^Document,
+	range: common.Range,
+	uri: string,
+	actions: ^[dynamic]CodeAction,
+) {
+	st := position_context.struct_type
+	if st == nil {
+		return // only in-struct method bodies carry the struct node we insert into
+	}
+
+	sel, ok := common.get_absolute_range(range, document.text)
+	if !ok {
+		return
+	}
+
+	expr, stmt, found := find_extractable_expr(&document.ast, sel)
+	if !found {
+		return
+	}
+
+	// Don't offer it for the struct's own field-type expressions etc. — the
+	// selection must sit inside a statement (a method body), which
+	// find_extractable_expr already guarantees.
+	src := document.ast.src
+	expr_text := src[expr.pos.offset:expr.end.offset]
+
+	type_str, type_ok := expr_type_string(ast_context, expr)
+	if !type_ok {
+		return // can't name the field's type — skip rather than emit broken code
+	}
+
+	name := "new_field"
+
+	// Edit 1: insert `name: T,` into the struct, after the last field.
+	field_pos, field_indent := struct_field_insert_point(st, src)
+	field_edit := TextEdit {
+		range   = {start = field_pos, end = field_pos},
+		newText = strings.concatenate({field_indent, name, ": ", type_str, ",\n"}, context.temp_allocator),
+	}
+
+	// Edit 2: assign the value at the use site, above the enclosing statement.
+	stmt_indent := get_line_indentation(src, stmt.pos.offset)
+	assign_pos := common.Position {
+		line      = stmt.pos.line - 1,
+		character = 0,
+	}
+	assign_edit := TextEdit {
+		range   = {start = assign_pos, end = assign_pos},
+		newText = strings.concatenate({stmt_indent, name, " = ", expr_text, "\n"}, context.temp_allocator),
+	}
+
+	// Edit 3: replace the original expression with the bare field name.
+	replace_edit := TextEdit {
+		range   = common.get_token_range(expr^, src),
+		newText = name,
+	}
+
+	textEdits := make([dynamic]TextEdit, context.temp_allocator)
+	append(&textEdits, field_edit)
+	append(&textEdits, assign_edit)
+	append(&textEdits, replace_edit)
+
+	workspaceEdit: WorkspaceEdit
+	workspaceEdit.changes = make(map[string][]TextEdit, 0, context.temp_allocator)
+	workspaceEdit.changes[uri] = textEdits[:]
+
+	append(
+		actions,
+		CodeAction {
+			kind = "refactor.extract",
+			isPreferred = false,
+			title = "Extract to struct field",
+			edit = workspaceEdit,
+		},
+	)
+}
+
+// Resolve an expression's type to a source-renderable string (with `^` prefixes
+// for pointers), for use as a struct field type.
+expr_type_string :: proc(ast_context: ^AstContext, expr: ^ast.Expr) -> (string, bool) {
+	symbol, ok := resolve_type_expression(ast_context, expr)
+	if !ok {
+		return "", false
+	}
+	prefix := ""
+	for _ in 0 ..< symbol.pointers {
+		prefix = strings.concatenate({prefix, "^"}, context.temp_allocator)
+	}
+	if symbol.type_name != "" {
+		return strings.concatenate({prefix, symbol.type_name}, context.temp_allocator), true
+	}
+	if symbol.name != "" {
+		return strings.concatenate({prefix, symbol.name}, context.temp_allocator), true
+	}
+	return "", false
+}
+
+// Where to insert a new field: after the last existing field, else before the
+// first method, else just after the opening brace. Returns (position, indent).
+struct_field_insert_point :: proc(st: ^ast.Struct_Type, src: string) -> (common.Position, string) {
+	if st.fields != nil && len(st.fields.list) > 0 {
+		last := st.fields.list[len(st.fields.list) - 1]
+		return common.Position{line = last.end.line, character = 0}, get_line_indentation(src, last.pos.offset)
+	}
+	if len(st.methods) > 0 {
+		first := st.methods[0]
+		return common.Position{line = first.pos.line - 1, character = 0}, get_line_indentation(src, first.pos.offset)
+	}
+	return common.Position{line = st.fields.open.line, character = 0}, "\t"
+}
+
 // An expression worth extracting into a variable (a value-producing expression,
 // not a type or a statement). Bare names / literals are excluded for a
 // zero-width cursor — extracting `x := x` is pointless — but allowed when the

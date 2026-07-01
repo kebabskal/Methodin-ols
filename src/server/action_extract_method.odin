@@ -127,6 +127,127 @@ add_extract_method_action :: proc(
 	)
 }
 
+// Extract statements into a new in-struct method: like extract-method, but the
+// new procedure is placed inside the enclosing struct (so it has `using self`)
+// and the selection is replaced with a bare call. `self` fields used in the
+// selection stay reachable in the new method, so they are not captured as params.
+@(private = "package")
+add_extract_method_to_struct_action :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	document: ^Document,
+	range: common.Range,
+	uri: string,
+	actions: ^[dynamic]CodeAction,
+) {
+	st := position_context.struct_type
+	if st == nil {
+		return
+	}
+
+	sel, ok := common.get_absolute_range(range, document.text)
+	if !ok || sel.start == sel.end {
+		return
+	}
+
+	stmts, _, found := find_selected_statements(&document.ast, sel)
+	if !found || len(stmts) == 0 {
+		return
+	}
+
+	src := document.ast.src
+	method_name := "new_method"
+	reset_ast_context(ast_context) // re-enable use_locals for type resolution of captured locals
+	ast_context.current_package = ast_context.document_package
+	params := collect_captured_params(ast_context, stmts, sel, exclude_using_fields = true)
+
+	param_list := strings.builder_make(context.temp_allocator)
+	arg_list := strings.builder_make(context.temp_allocator)
+	for p, i in params {
+		if i > 0 {
+			strings.write_string(&param_list, ", ")
+			strings.write_string(&arg_list, ", ")
+		}
+		strings.write_string(&param_list, p.name)
+		strings.write_string(&param_list, ": ")
+		strings.write_string(&param_list, p.type_str)
+		strings.write_string(&arg_list, p.name)
+	}
+
+	m_pos, m_indent := struct_method_insert_point(st, src)
+	body := strings.builder_make(context.temp_allocator)
+	for s in stmts {
+		strings.write_string(&body, m_indent)
+		strings.write_byte(&body, '\t')
+		strings.write_string(&body, src[s.pos.offset:s.end.offset])
+		strings.write_byte(&body, '\n')
+	}
+
+	// Trailing comma: in-struct method declarations are comma-separated members.
+	new_method := strings.concatenate(
+		{
+			m_indent,
+			method_name,
+			" :: proc(",
+			strings.to_string(param_list),
+			") {\n",
+			strings.to_string(body),
+			m_indent,
+			"},\n",
+		},
+		context.temp_allocator,
+	)
+
+	insert_edit := TextEdit {
+		range   = {start = m_pos, end = m_pos},
+		newText = new_method,
+	}
+
+	first := stmts[0]
+	last := stmts[len(stmts) - 1]
+	call_indent := get_line_indentation(src, first.pos.offset)
+	call_text := strings.concatenate(
+		{call_indent, method_name, "(", strings.to_string(arg_list), ")"},
+		context.temp_allocator,
+	)
+	replace_edit := TextEdit {
+		range = {start = {line = first.pos.line - 1, character = 0}, end = common.get_token_range(last^, src).end},
+		newText = call_text,
+	}
+
+	textEdits := make([dynamic]TextEdit, context.temp_allocator)
+	append(&textEdits, insert_edit)
+	append(&textEdits, replace_edit)
+
+	workspaceEdit: WorkspaceEdit
+	workspaceEdit.changes = make(map[string][]TextEdit, 0, context.temp_allocator)
+	workspaceEdit.changes[uri] = textEdits[:]
+
+	append(
+		actions,
+		CodeAction {
+			kind = "refactor.extract",
+			isPreferred = false,
+			title = "Extract to method",
+			edit = workspaceEdit,
+		},
+	)
+}
+
+// Insert a new method after the last existing method, else after the last
+// field, else just after the opening brace.
+struct_method_insert_point :: proc(st: ^ast.Struct_Type, src: string) -> (common.Position, string) {
+	if len(st.methods) > 0 {
+		last := st.methods[len(st.methods) - 1]
+		return common.Position{line = last.end.line, character = 0}, get_line_indentation(src, last.pos.offset)
+	}
+	if st.fields != nil && len(st.fields.list) > 0 {
+		last := st.fields.list[len(st.fields.list) - 1]
+		return common.Position{line = last.end.line, character = 0}, get_line_indentation(src, last.pos.offset)
+	}
+	return common.Position{line = st.fields.open.line, character = 0}, "\t"
+}
+
 Captured_Param :: struct {
 	name:     string,
 	type_str: string,
@@ -138,22 +259,25 @@ collect_captured_params :: proc(
 	ast_context: ^AstContext,
 	stmts: []^ast.Stmt,
 	sel: common.AbsoluteRange,
+	exclude_using_fields := false,
 ) -> []Captured_Param {
 	params := make([dynamic]Captured_Param, context.temp_allocator)
 	seen := make(map[string]bool, context.temp_allocator)
 
 	Capture_Walk :: struct {
-		ast_context: ^AstContext,
-		params:      ^[dynamic]Captured_Param,
-		seen:        ^map[string]bool,
-		sel:         common.AbsoluteRange,
+		ast_context:          ^AstContext,
+		params:               ^[dynamic]Captured_Param,
+		seen:                 ^map[string]bool,
+		sel:                  common.AbsoluteRange,
+		exclude_using_fields: bool,
 	}
 
 	data := Capture_Walk {
-		ast_context = ast_context,
-		params      = &params,
-		seen        = &seen,
-		sel         = sel,
+		ast_context          = ast_context,
+		params               = &params,
+		seen                 = &seen,
+		sel                  = sel,
+		exclude_using_fields = exclude_using_fields,
 	}
 
 	visit :: proc(visitor: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
@@ -168,6 +292,11 @@ collect_captured_params :: proc(
 				return visitor
 			}
 			if local, ok := get_local(data.ast_context^, ident^); ok {
+				// For struct-method extraction, `using self` fields stay reachable
+				// in the new in-struct method — don't capture them as params.
+				if data.exclude_using_fields && .UsingField in local.flags {
+					return visitor
+				}
 				// Declared before the selection → a captured parameter.
 				if local.offset <= data.sel.start && !local.local_global {
 					type_str, tok := local_type_string(data.ast_context, local)

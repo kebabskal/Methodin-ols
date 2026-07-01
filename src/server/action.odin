@@ -103,6 +103,16 @@ get_code_actions :: proc(document: ^Document, range: common.Range, config: ^comm
 			strings.clone(document.uri.uri, context.temp_allocator),
 			&actions,
 		)
+		// Methodin: same extraction family, but hoists onto a struct field when
+		// the selection is inside an in-struct method body.
+		add_extract_field_action(
+			&ast_context,
+			&position_context,
+			document,
+			range,
+			strings.clone(document.uri.uri, context.temp_allocator),
+			&actions,
+		)
 	}
 
 	if config.enable_code_action_extract_method {
@@ -113,7 +123,27 @@ get_code_actions :: proc(document: ^Document, range: common.Range, config: ^comm
 			strings.clone(document.uri.uri, context.temp_allocator),
 			&actions,
 		)
+		// Methodin: same, but extract into a new in-struct method (with `self`)
+		// when the selection is inside an in-struct method body.
+		add_extract_method_to_struct_action(
+			&ast_context,
+			&position_context,
+			document,
+			range,
+			strings.clone(document.uri.uri, context.temp_allocator),
+			&actions,
+		)
 	}
+
+	// Methodin: on a call to a not-yet-existing method (`x.foo()`), offer to
+	// create the stub on x's struct. Contextual — only fires when foo is missing.
+	add_generate_method_action(
+		&ast_context,
+		&position_context,
+		document,
+		strings.clone(document.uri.uri, context.temp_allocator),
+		&actions,
+	)
 
 	return actions[:], true
 }
