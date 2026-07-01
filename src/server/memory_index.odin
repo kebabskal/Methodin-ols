@@ -140,6 +140,26 @@ memory_index_fuzzy_search :: proc(
 					append(&symbols, result)
 				}
 			}
+
+			// Methodin: in-struct / impl methods are stored only in
+			// pkg.methods (keyed by receiver type), never in pkg.symbols, so
+			// scan them here too or they never show up in workspace symbols.
+			for method_key, bucket in pkg.methods {
+				for symbol in bucket {
+					if should_skip_private_symbol(symbol, current_pkg, current_file_uri) {
+						continue
+					}
+					if score, ok := score_name(matchers[:], symbol.name); ok {
+						result := FuzzyResult {
+							symbol    = symbol,
+							score     = score,
+							container = method_key.name, // receiver struct, surfaced as containerName
+						}
+
+						append(&symbols, result)
+					}
+				}
+			}
 		}
 	}
 

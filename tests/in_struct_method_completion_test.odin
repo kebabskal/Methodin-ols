@@ -69,3 +69,21 @@ in_struct_method_chained_field_completion :: proc(t: ^testing.T) {
 
 	test.expect_completion_labels(t, &source, ".", {"is_down", "was_pressed"})
 }
+
+// Methodin: `impl Type { ... }` method bodies must offer struct fields via the
+// synthetic `self` scope, same as in-struct methods.
+@(test)
+impl_method_self_field_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Widget :: struct { id: int, label: string }
+		impl Widget {
+			render :: proc() {
+				self.{*}
+			}
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"id", "label"})
+}

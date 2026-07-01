@@ -82,3 +82,39 @@ methodin_auto_union_base_method_completion :: proc(t: ^testing.T) {
 	}
 	test.expect_completion_labels(t, &source, ".", {"hit"})
 }
+
+// Methodin: methods of a `using`-embedded struct must be offered on the derived
+// value, transitively (ChaserEnemy -> EnemyBase -> Transform).
+@(test)
+methodin_embedded_method_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Transform :: struct {
+			x: f32,
+			get_forward :: proc() -> f32 { return x },
+		}
+		EnemyBase :: struct {
+			using transform: Transform,
+			take_damage :: proc(d: int) {},
+		}
+		ChaserEnemy :: struct { using enemy: EnemyBase, aggro: f32 }
+		main :: proc() {
+			c: ChaserEnemy
+			c.{*}
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"get_forward", "take_damage"})
+}
+
+// Methodin: `auto_union` must be offered as a builtin completion, like auto_cast.
+@(test)
+methodin_auto_union_keyword_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		asdf :: auto_{*}
+		`,
+	}
+	test.expect_completion_labels(t, &source, "", {"auto_union"})
+}

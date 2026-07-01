@@ -86,6 +86,11 @@ resolve_entire_file :: proc(
 	symbols := make(map[uintptr]SymbolAndNode, 10000, allocator)
 
 	for decl in document.ast.decls {
+		// Methodin: struct/impl context is set while descending into a decl's
+		// method bodies; reset it per top-level decl so it can't leak into a
+		// later free proc and mis-bind a bare ident to a previous struct's method.
+		position_context.struct_type = nil
+		position_context.impl_block = nil
 		resolve_decl(&position_context, &ast_context, document, decl, &symbols, flag, allocator, target_name)
 		clear(&ast_context.locals)
 	}
@@ -223,36 +228,21 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 		data.position_context.identifier = node
 		if data.flag != .None {
 			if data.target_name == "" || n.name == data.target_name {
-				if symbol, ok := resolve_location_identifier(data.ast_context, n^); ok {
+				// Methodin: a bare ident inside a method body that names a sibling
+				// method is a bare method call (the compiler rewrites `foo()` to
+				// `self.foo()`). Bind it to that method's decl with PRIORITY over a
+				// same-named package proc, so rename/references follow the method
+				// rather than a collision (method names like `init`/`update`/`spawn`
+				// commonly also exist as free procs).
+				if sym, ok := resolve_location_sibling_method(data.ast_context, data.position_context, n.name); ok {
+					data.symbols[cast(uintptr)node] = SymbolAndNode {
+						node   = n,
+						symbol = sym,
+					}
+				} else if symbol, ok := resolve_location_identifier(data.ast_context, n^); ok {
 					data.symbols[cast(uintptr)node] = SymbolAndNode {
 						node   = n,
 						symbol = symbol,
-					}
-				} else if st := data.position_context.struct_type; st != nil {
-					// Methodin: an unresolved bare ident inside a method body that
-					// names a sibling method is a bare method call (the compiler
-					// rewrites `foo()` to `self.foo()`). Resolve it to that method's
-					// declaration token so it renames together with the method.
-					for m in st.methods {
-						vd, vd_ok := m.derived.(^ast.Value_Decl)
-						if !vd_ok || len(vd.names) != 1 {
-							continue
-						}
-						mname, mok := vd.names[0].derived.(^ast.Ident)
-						if !mok || mname.name != n.name {
-							continue
-						}
-						data.symbols[cast(uintptr)node] = SymbolAndNode {
-							node   = n,
-							symbol = Symbol {
-								range = common.get_token_range(vd.names[0], string(data.document.text)),
-								uri = strings.clone(
-									common.create_uri(mname.pos.file, data.ast_context.allocator).uri,
-									data.ast_context.allocator,
-								),
-							},
-						}
-						break
 					}
 				}
 			}

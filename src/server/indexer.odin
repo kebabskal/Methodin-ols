@@ -14,8 +14,9 @@ Indexer :: struct {
 indexer: Indexer
 
 FuzzyResult :: struct {
-	symbol: Symbol,
-	score:  f32,
+	symbol:    Symbol,
+	score:     f32,
+	container: string, // Methodin: receiver struct name for a method result (empty otherwise)
 }
 
 clear_index_cache :: proc() {

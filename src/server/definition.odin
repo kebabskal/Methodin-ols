@@ -132,10 +132,8 @@ get_definition_location :: proc(document: ^Document, position: common.Position, 
 			return {}, false
 		}
 	} else if position_context.identifier != nil {
-		if resolved, ok := resolve_location_identifier(
-			&ast_context,
-			position_context.identifier.derived.(^ast.Ident)^,
-		); ok {
+		ident := position_context.identifier.derived.(^ast.Ident)^
+		if resolved, ok := resolve_location_identifier(&ast_context, ident); ok {
 			if config.enable_overload_resolution {
 				resolved = try_resolve_proc_group_overload(&ast_context, &position_context, resolved)
 			}
@@ -144,6 +142,10 @@ get_definition_location :: proc(document: ^Document, position: common.Position, 
 					append(&locations, common.Location{range = symbol.range, uri = symbol.uri})
 				}
 			}
+			location.range = resolved.range
+			uri = resolved.uri
+		} else if resolved, ok := resolve_location_sibling_method(&ast_context, &position_context, ident.name); ok {
+			// Methodin: bare sibling method call (`foo()` == `self.foo()`).
 			location.range = resolved.range
 			uri = resolved.uri
 		} else {

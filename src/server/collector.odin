@@ -1305,6 +1305,26 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 
 			add_comp_lit_fields(collection, &generic, v, package_map, file)
 			symbol.value = generic
+		case ^ast.Call_Expr:
+			// Methodin: `Name :: auto_union(T)` is a Call_Expr whose callee is
+			// the `auto_union` ident. Treat it as a union type symbol so it
+			// gets a `.Union` token type instead of falling to `.Unresolved`.
+			if ident, is_ident := v.expr.derived.(^ast.Ident); is_ident && ident.name == "auto_union" {
+				token = v^
+				token_type = .Union
+				symbol.value = collect_generic(collection, col_expr, package_map, uri)
+				symbol.signature = "union"
+			} else {
+				symbol.value = collect_generic(collection, col_expr, package_map, uri)
+
+				if .Mutable in expr.flags {
+					token_type = .Variable
+				} else {
+					token_type = .Unresolved
+				}
+
+				token = expr.expr
+			}
 		case:
 			// default
 			symbol.value = collect_generic(collection, col_expr, package_map, uri)

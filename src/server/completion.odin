@@ -1843,6 +1843,13 @@ get_identifier_completion :: proc(
 			documentation = docs,
 		}
 
+		// Methodin: `auto_union` takes a type argument — expand to `auto_union(T)`
+		// with `T` selected so the user can type the base type straight away.
+		if keyword == "auto_union" && config.enable_snippets {
+			item.insertText = "auto_union(${1:T})$0"
+			item.insertTextFormat = .Snippet
+		}
+
 		if score, ok := common.fuzzy_match(matcher, keyword); ok == 1 {
 			append(results, CompletionResult{score = score * 1.1, completion_item = item})
 		}

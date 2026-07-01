@@ -464,6 +464,11 @@ get_hover_information :: proc(document: ^Document, position: common.Position) ->
 			build_documentation(&ast_context, &resolved, false)
 			hover.contents = write_hover_content(&ast_context, resolved)
 			return hover, true, true
+		} else if resolved, ok := resolve_location_sibling_method(&ast_context, &position_context, ident.name); ok {
+			// Methodin: bare sibling method call (`foo()` == `self.foo()`).
+			build_documentation(&ast_context, &resolved, false)
+			hover.contents = write_hover_content(&ast_context, resolved)
+			return hover, true, true
 		}
 	}
 

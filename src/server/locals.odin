@@ -1351,6 +1351,13 @@ get_function_locals :: proc(
 
 	add_in_struct_method_self_scope(file, proc_lit, ast_context, document_position)
 
+	// Methodin: `impl Type { m :: proc(){} }` bodies need the same synthetic
+	// `self` scope as in-struct methods, so `self.` and bare field completion
+	// work inside impl methods too.
+	if document_position.impl_block != nil {
+		add_impl_method_self_scope(file, proc_lit, document_position.impl_block, ast_context)
+	}
+
 	block: ^ast.Block_Stmt
 	block, ok = proc_lit.body.derived.(^ast.Block_Stmt)
 

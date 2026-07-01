@@ -74,6 +74,16 @@ append_method_completion :: proc(
 		collect_methods(ast_context, position_context, method, results)
 	}
 
+	// Methodin: promote methods from `using`-embedded structs (transitively), so
+	// e.g. `ChaserEnemy` (embeds `EnemyBase`, which embeds `Transform`) offers
+	// Transform's and EnemyBase's methods too — mirroring how the compiler makes
+	// them callable via UFCS on the derived value.
+	if _, is_struct := selector_symbol.value.(SymbolStructValue); is_struct {
+		seen := make(map[string]bool, 0, context.temp_allocator)
+		seen[strings.concatenate({selector_symbol.pkg, "/", selector_symbol.name}, context.temp_allocator)] = true
+		collect_using_methods(ast_context, position_context, selector_symbol, results, &seen, 0)
+	}
+
 	// Fixed-array receivers (e.g. linalg vectors) have no named type to key
 	// methods on, but UFCS reaches array-receiver free procs through any
 	// in-scope import. Offer those, indexed under the synthetic `$array` key.
@@ -124,6 +134,48 @@ collect_in_scope_array_methods :: proc(
 				add_proc_group_method_completion(ast_context, &symbol, sym_value, results)
 			}
 		}
+	}
+}
+
+@(private = "file")
+collect_using_methods :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	struct_symbol: Symbol,
+	results: ^[dynamic]CompletionResult,
+	seen: ^map[string]bool,
+	depth: int,
+) {
+	if depth > 32 {
+		return
+	}
+	sv, is_struct := struct_symbol.value.(SymbolStructValue)
+	if !is_struct {
+		return
+	}
+	for using_idx in sv.usings {
+		if using_idx < 0 || using_idx >= len(sv.types) {
+			continue
+		}
+		embedded, ok := resolve_type_expression(ast_context, sv.types[using_idx])
+		if !ok {
+			continue
+		}
+		if _, embedded_is_struct := embedded.value.(SymbolStructValue); !embedded_is_struct {
+			continue
+		}
+		key := strings.concatenate({embedded.pkg, "/", embedded.name}, context.temp_allocator)
+		if key in seen {
+			continue // guards diamond / cyclic `using` graphs
+		}
+		seen[key] = true
+
+		method_pkg := embedded.pkg
+		if is_builtin_type_name(embedded.name) {
+			method_pkg = "$builtin"
+		}
+		collect_methods(ast_context, position_context, Method{name = embedded.name, pkg = method_pkg}, results)
+		collect_using_methods(ast_context, position_context, embedded, results, seen, depth + 1)
 	}
 }
 

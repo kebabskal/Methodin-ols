@@ -65,6 +65,22 @@ get_document_symbols :: proc(document: ^Document) -> []DocumentSymbol {
 					symbol.children = children[:]
 				}
 			}
+
+			// Methodin: in-struct methods (`Foo :: struct { bar :: proc(){} }`)
+			// are stored on the raw Struct_Type AST node, not in the resolved
+			// struct value. Emit each as a nested `.Method` child alongside the
+			// struct's fields.
+			if st, is_struct := global.expr.derived.(^ast.Struct_Type); is_struct && len(st.methods) > 0 {
+				children := make([dynamic]DocumentSymbol, context.temp_allocator)
+				append(&children, ..symbol.children)
+				for m in st.methods {
+					if method, ok := make_method_document_symbol(m, ast_context.file.src); ok {
+						append(&children, method)
+					}
+				}
+				symbol.children = children[:]
+			}
+
 			symbol.kind = .Struct
 		case ^ast.Proc_Lit, ^ast.Proc_Group:
 			symbol.kind = .Function
@@ -126,8 +142,63 @@ get_document_symbols :: proc(document: ^Document) -> []DocumentSymbol {
 		append(&symbols, symbol)
 	}
 
+	// Methodin: `impl <Type> { ... }` blocks are not Value_Decls, so they
+	// never make it into ast_context.globals. Walk the raw decls and emit
+	// each impl block as a container symbol whose methods are `.Method`
+	// children.
+	for decl in document.ast.decls {
+		impl, ok := decl.derived.(^ast.Impl_Block)
+		if !ok {
+			continue
+		}
+
+		container: DocumentSymbol
+		container.range = common.get_token_range(impl^, ast_context.file.src)
+		container.selectionRange = common.get_token_range(impl.type_expr, ast_context.file.src)
+		ensure_selection_range_contained(&container.range, container.selectionRange)
+		container.kind = .Struct
+
+		if type_ident, ti_ok := impl.type_expr.derived.(^ast.Ident); ti_ok {
+			container.name = type_ident.name
+		} else {
+			container.name = "impl"
+		}
+
+		children := make([dynamic]DocumentSymbol, context.temp_allocator)
+		for m in impl.methods {
+			if method, m_ok := make_method_document_symbol(m, ast_context.file.src); m_ok {
+				append(&children, method)
+			}
+		}
+		container.children = children[:]
+
+		append(&symbols, container)
+	}
+
 
 	return symbols[:]
+}
+
+// Methodin: build a `.Method` DocumentSymbol from an in-struct/impl method
+// decl (`name :: proc(...) {...}` or `name :: proc { ... }`). Mirrors the
+// name extraction in collector.odin's register_in_struct_method.
+@(private = "file")
+make_method_document_symbol :: proc(method_stmt: ^ast.Stmt, src: string) -> (symbol: DocumentSymbol, ok: bool) {
+	vd, vd_ok := method_stmt.derived.(^ast.Value_Decl)
+	if !vd_ok || len(vd.names) != 1 {
+		return {}, false
+	}
+
+	name_ident, ni_ok := vd.names[0].derived.(^ast.Ident)
+	if !ni_ok {
+		return {}, false
+	}
+
+	symbol.range = common.get_token_range(name_ident^, src)
+	symbol.selectionRange = symbol.range
+	symbol.name = name_ident.name
+	symbol.kind = .Method
+	return symbol, true
 }
 
 @(private="file")

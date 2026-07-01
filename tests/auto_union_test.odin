@@ -78,3 +78,24 @@ auto_union_resolves_promoted_field :: proc(t: ^testing.T) {
 	}
 	test.expect_hover(t, &source, "Entity.hp: int")
 }
+
+// Regression: two auto_union aliases in one file must not send resolution into
+// the self-re-entrant, DeferredDepth-deep, full-workspace scan that previously
+// blew up time and RAM (exponential in the number of unions). This test simply
+// completing quickly IS the guard; the hover also confirms correctness is intact.
+@(test)
+auto_union_multiple_unions_no_blowup :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Entity :: struct { hp: int }
+		Thing  :: struct { size: int }
+		Player :: struct { using entity: Entity, score: int }
+		Enemy  :: struct { using entity: Entity, damage: int }
+
+		Actors  :: auto_union(Entity)
+		Th{*}ings :: auto_union(Thing)
+		World :: struct { actors: [dynamic]Actors, things: [dynamic]Things }
+		`,
+	}
+	test.expect_hover(t, &source, "test.Things :: union{}")
+}

@@ -52,6 +52,11 @@ AstContext :: struct {
 	// We should probably rework how this is handled in the future
 	resolve_specific_overload: bool,
 	call_expr_recursion_cache: map[rawptr]SymbolResult,
+	// Methodin: per-request memo + re-entry guard for `auto_union(T)` resolution,
+	// keyed by the target `T` (pkg/name). Breaks the self-recursion where the
+	// current-file globals scan re-resolves the auto_union alias being defined,
+	// and avoids repeating the O(workspace) variant scan on every hover/keystroke.
+	auto_union_cache:          map[string]SymbolResult,
 }
 
 SymbolResult :: struct {
@@ -73,6 +78,7 @@ make_ast_context :: proc(
 		usings                    = make([dynamic]UsingStatement, allocator),
 		recursion_map             = make(map[rawptr]struct{}, 0, allocator),
 		call_expr_recursion_cache = make(map[rawptr]SymbolResult, 0, allocator),
+		auto_union_cache          = make(map[string]SymbolResult, 0, allocator),
 		file                      = file,
 		imports                   = imports,
 		use_locals                = true,
@@ -1595,11 +1601,35 @@ auto_union_embeds :: proc(ast_context: ^AstContext, sv: SymbolStructValue, targe
 // `using`-embeds T at offset 0 (directly or transitively). The variants are
 // listed as plain idents so hover/go-to-definition/type-switch reuse the normal
 // union machinery, and hovering the alias reveals which structs are included.
+// Methodin: is `expr` a call to the `auto_union` builtin (`auto_union(T)`)?
+is_auto_union_expr :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	call, is_call := expr.derived.(^ast.Call_Expr)
+	if !is_call {
+		return false
+	}
+	ident, is_ident := call.expr.derived.(^ast.Ident)
+	return is_ident && ident.name == "auto_union"
+}
+
 resolve_auto_union :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr, name := "") -> (Symbol, bool) {
 	target, ok := resolve_type_expression(ast_context, v.args[0])
 	if !ok {
 		return {}, false
 	}
+
+	// Memo + re-entry guard, keyed by alias name + target T. Without this, the
+	// current-file globals scan below re-resolves the auto_union alias being
+	// defined, re-entering this proc up to DeferredDepth times (exponentially
+	// with multiple unions in a file) — each level doing a full workspace scan,
+	// which is the reported hang + RAM blowup.
+	key := strings.concatenate({name, "\x00", target.pkg, "\x00", target.name}, ast_context.allocator)
+	if cached, hit := ast_context.auto_union_cache[key]; hit {
+		return cached.symbol, cached.ok
+	}
+	ast_context.auto_union_cache[key] = {} // in-progress sentinel: a re-entrant resolve returns not-ok
 
 	types := make([dynamic]^ast.Expr, 0, ast_context.allocator)
 	seen := make(map[string]bool, 0, context.temp_allocator)
@@ -1630,6 +1660,12 @@ resolve_auto_union :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr, name := 
 
 	// Current file (covers same-file and unsaved edits the disk index misses).
 	for gname in ast_context.globals {
+		g := ast_context.globals[gname]
+		// An `auto_union` alias can never be a struct variant; skip it. This is
+		// also the sole source of the self-recursion the guard above stops.
+		if is_auto_union_expr(g.expr) || is_auto_union_expr(g.value_expr) {
+			continue
+		}
 		ident := new_type(ast.Ident, v.pos, v.end, ast_context.allocator)
 		ident.name = gname
 		if sym, ok := resolve_type_expression(ast_context, cast(^ast.Expr)ident); ok {
@@ -1660,6 +1696,7 @@ resolve_auto_union :: proc(ast_context: ^AstContext, v: ^ast.Call_Expr, name := 
 		type      = .Union,
 		value     = SymbolUnionValue{types = types[:], kind = .Normal, using_base = v.args[0]},
 	}
+	ast_context.auto_union_cache[key] = {symbol, true}
 	return symbol, true
 }
 
@@ -3232,6 +3269,66 @@ resolve_location_type_identifier :: proc(ast_context: ^AstContext, node: ast.Ide
 		}
 	}
 	return resolve_location_identifier(ast_context, node)
+}
+
+// Methodin: resolve a bare identifier that names a sibling method of the
+// enclosing in-struct or `impl` method body. The compiler rewrites `foo()` to
+// `self.foo()`, so a bare sibling call must point at that method's declaration
+// for hover / go-to-definition / references / rename. Returns the method decl's
+// name-token location.
+resolve_location_sibling_method :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	name: string,
+) -> (Symbol, bool) {
+	scan :: proc(ast_context: ^AstContext, methods: []^ast.Stmt, name: string) -> (Symbol, bool) {
+		for m in methods {
+			vd, vd_ok := m.derived.(^ast.Value_Decl)
+			if !vd_ok || len(vd.names) != 1 {
+				continue
+			}
+			mname, mok := vd.names[0].derived.(^ast.Ident)
+			if !mok || mname.name != name {
+				continue
+			}
+			range := common.get_token_range(vd.names[0], ast_context.file.src)
+			uri := strings.clone(
+				common.create_uri(mname.pos.file, ast_context.allocator).uri,
+				ast_context.allocator,
+			)
+			// Enrich with the proc's resolved signature so hover shows it; fall
+			// back to a bare location symbol (enough for go-to-definition).
+			if len(vd.values) == 1 {
+				if sym, sok := resolve_type_expression(ast_context, vd.values[0]); sok {
+					sym.range = range
+					sym.uri = uri
+					sym.name = name
+					sym.pkg = ast_context.document_package
+					return sym, true
+				}
+			}
+			return Symbol {
+					range = range,
+					uri = uri,
+					pkg = ast_context.document_package,
+					name = name,
+					type = .Function,
+				},
+				true
+		}
+		return {}, false
+	}
+	if st := position_context.struct_type; st != nil {
+		if sym, ok := scan(ast_context, st.methods, name); ok {
+			return sym, true
+		}
+	}
+	if ib := position_context.impl_block; ib != nil {
+		if sym, ok := scan(ast_context, ib.methods, name); ok {
+			return sym, true
+		}
+	}
+	return {}, false
 }
 
 resolve_location_identifier :: proc(ast_context: ^AstContext, node: ast.Ident) -> (Symbol, bool) {

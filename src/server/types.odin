@@ -603,9 +603,10 @@ WorkspaceSymbolParams :: struct {
 }
 
 WorkspaceSymbol :: struct {
-	name:     string,
-	kind:     SymbolKind,
-	location: common.Location,
+	name:          string,
+	kind:          SymbolKind,
+	location:      common.Location,
+	containerName: string, // Methodin: receiver struct for a method, so `update` shows which struct it lies in
 }
 
 DidChangeConfigurationParams :: struct {

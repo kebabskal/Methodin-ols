@@ -89,6 +89,7 @@ get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceS
 				name = result.symbol.name,
 				location = {range = result.symbol.range, uri = result.symbol.uri},
 				kind = symbol_kind_to_type(result.symbol.type),
+				containerName = result.container, // Methodin: shows which struct a method lies in
 			}
 
 			append(&symbols, symbol)

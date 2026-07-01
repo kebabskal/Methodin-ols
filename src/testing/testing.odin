@@ -462,6 +462,34 @@ expect_definition_locations :: proc(t: ^testing.T, src: ^Source, expect_location
 	}
 }
 
+// Asserts that every name in `expected` appears somewhere in the document
+// symbol tree returned by get_document_symbols — either as a top-level symbol
+// or as a nested child (fields / Methodin `.Method` entries).
+expect_document_symbol_names :: proc(t: ^testing.T, src: ^Source, expected: []string) {
+	setup(src)
+	defer teardown(src)
+
+	symbols := server.get_document_symbols(src.document)
+
+	names := make(map[string]bool, context.temp_allocator)
+	for symbol in symbols {
+		names[symbol.name] = true
+		for child in symbol.children {
+			names[child.name] = true
+		}
+	}
+
+	for name in expected {
+		if name not_in names {
+			present := make([dynamic]string, 0, context.temp_allocator)
+			for n in names {
+				append(&present, n)
+			}
+			log.errorf("Expected document symbol %q, but it was missing. Present: %v", name, present[:])
+		}
+	}
+}
+
 expect_type_definition_locations :: proc(t: ^testing.T, src: ^Source, expect_locations: []common.Location) {
 	setup(src)
 	defer teardown(src)

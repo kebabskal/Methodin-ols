@@ -143,3 +143,23 @@ rename_impl_method_from_declaration :: proc(t: ^testing.T) {
 	}
 	test.expect_rename_edit_count(t, &source, "speak", 2)
 }
+
+// Methodin: a method whose name collides with a package-level proc. The bare
+// sibling call must bind to the METHOD (compiler rewrites `spawn()` ->
+// `self.spawn()`), so renaming the method touches decl + call (2), and the
+// free proc of the same name stays untouched. (RC1: sibling takes priority.)
+@(test)
+rename_method_collides_with_package_proc :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+World :: struct {
+	frame: int,
+	spa{*}wn :: proc() { frame += 1 },
+	update :: proc() { spawn() },
+}
+spawn :: proc() {}
+`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_rename_edit_count(t, &source, "make", 2)
+}

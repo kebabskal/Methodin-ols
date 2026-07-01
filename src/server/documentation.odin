@@ -1038,6 +1038,7 @@ keywords_docs: map[string]string = {
 	// taken from https://github.com/odin-lang/Odin/wiki/Keywords-and-Operators
 	"asm"           = "",
 	"auto_cast"     = "```odin\nauto_cast v```\nAutomatically casts an expression `v` to the destination’s type if possible.",
+	"auto_union"    = "```odin\nName :: auto_union(T)\n```\nMethodin: a tagged `union` of every struct that `using`-embeds `T` at offset 0 (directly or transitively).",
 	"bit_field"     = "",
 	"bit_set"       = "",
 	"break"         = "",
