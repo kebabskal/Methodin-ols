@@ -98,3 +98,52 @@ rename_field_used_in_impl_method :: proc(t: ^testing.T) {
 	}
 	test.expect_rename_edit_count(t, &source, "title", 3)
 }
+
+// A local that shares a sibling method's name shadows it (the compiler's
+// bare-call rewrite doesn't apply then). Renaming the local must touch only
+// the local's occurrences — decl + two uses = 3 edits — and leave the
+// method's declaration and its genuine call sites alone.
+@(test)
+rename_local_shadowing_sibling_method :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		W :: struct {
+			spawn :: proc() {
+			},
+			update :: proc() {
+				spa{*}wn := 1
+				spawn = spawn + 1
+			},
+		}
+		main :: proc() {
+			w: W
+			w.spawn()
+		}
+		`,
+	}
+	test.expect_rename_edit_count(t, &source, "count", 3)
+}
+
+// An identifier in a non-call position (here a type) that collides with a
+// sibling method name must not bind to the method: renaming the type from
+// inside the method body renames the type's decl and uses (3 edits), not the
+// method.
+@(test)
+rename_type_colliding_with_sibling_method :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Timer :: struct {
+			t: f32,
+		}
+		W :: struct {
+			timer :: proc() {
+			},
+			update :: proc() {
+				x: Tim{*}er
+				_ = x
+			},
+		}
+		`,
+	}
+	test.expect_rename_edit_count(t, &source, "Clock", 2)
+}

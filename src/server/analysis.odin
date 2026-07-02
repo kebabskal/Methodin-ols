@@ -3993,13 +3993,92 @@ try_resolve_ufcs_in_scope :: proc(
 
 	for pkg_path in pkgs {
 		if sym, ok := lookup(field, pkg_path, ast_context.uri); ok {
-			if is_proc_symbol(sym) {
+			if is_proc_symbol(sym) && ufcs_candidate_accepts_receiver(ast_context, sym, receiver) {
 				return sym, true
 			}
 		}
 	}
 
 	return {}, false
+}
+
+// ufcs_candidate_accepts_receiver reports whether a proc (or proc group)
+// found by name can actually take `receiver` as its first argument — the
+// compiler's rule for the import-search UFCS tier. Without this check any
+// same-named proc in scope binds (`my_struct.println` -> fmt.println), which
+// breaks hover/goto and falsely marks imports as used. Name-level only: a
+// bare polymorphic first parameter accepts any receiver; otherwise the
+// pointer-unwrapped parameter type must name the receiver type (container
+// receivers match container-typed parameters).
+@(private = "file")
+ufcs_candidate_accepts_receiver :: proc(
+	ast_context: ^AstContext,
+	candidate: Symbol,
+	receiver: Symbol,
+) -> bool {
+	first_param_accepts :: proc(param_type: ^ast.Expr, receiver: Symbol) -> bool {
+		if param_type == nil {
+			return false
+		}
+		raw, _, raw_ok := unwrap_pointer_expr(param_type)
+		if !raw_ok {
+			return false
+		}
+		if poly, is_poly := raw.derived.(^ast.Poly_Type); is_poly {
+			if poly.specialization == nil {
+				return true // `$T` takes anything
+			}
+			raw = poly.specialization
+		}
+
+		#partial switch _ in receiver.value {
+		case SymbolFixedArrayValue, SymbolSliceValue, SymbolDynamicArrayValue, SymbolMapValue:
+			#partial switch _ in raw.derived {
+			case ^ast.Array_Type, ^ast.Dynamic_Array_Type, ^ast.Map_Type:
+				return true
+			}
+			return false
+		}
+
+		if receiver.name == "" {
+			return false
+		}
+		#partial switch v in raw.derived {
+		case ^ast.Ident:
+			return v.name == receiver.name
+		case ^ast.Selector_Expr:
+			return v.field != nil && v.field.name == receiver.name
+		}
+		return false
+	}
+
+	#partial switch v in candidate.value {
+	case SymbolProcedureValue:
+		if len(v.arg_types) == 0 || v.arg_types[0] == nil {
+			return false
+		}
+		return first_param_accepts(v.arg_types[0].type, receiver)
+	case SymbolProcedureGroupValue:
+		proc_group, is_group := v.group.derived.(^ast.Proc_Group)
+		if !is_group {
+			return false
+		}
+		for member_expr in proc_group.args {
+			member, ok := resolve_type_expression(ast_context, member_expr)
+			if !ok {
+				continue
+			}
+			if member_value, is_proc := member.value.(SymbolProcedureValue); is_proc {
+				if len(member_value.arg_types) > 0 &&
+				   member_value.arg_types[0] != nil &&
+				   first_param_accepts(member_value.arg_types[0].type, receiver) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return false
 }
 
 @(private = "file")
@@ -4013,11 +4092,15 @@ try_resolve_ufcs_direct :: proc(
 ) {
 	// Built-in container types ([dynamic]T, []T, [N]T, map[K]V) have no
 	// named receiver in the method index — their "methods" (append, clear,
-	// len, ...) are just polymorphic free procs in base:runtime.
+	// len, ...) are just polymorphic free procs in base:runtime. Validate
+	// the first parameter so a container receiver doesn't bind to any
+	// same-named runtime symbol (`s.Allocator` must not "resolve").
 	#partial switch _ in receiver.value {
 	case SymbolDynamicArrayValue, SymbolSliceValue, SymbolFixedArrayValue, SymbolMapValue:
 		if sym, ok := lookup(field, "runtime", ast_context.uri); ok {
-			return sym, true
+			if ufcs_candidate_accepts_receiver(ast_context, sym, receiver) {
+				return sym, true
+			}
 		}
 	}
 

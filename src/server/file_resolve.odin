@@ -234,15 +234,31 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 				// same-named package proc, so rename/references follow the method
 				// rather than a collision (method names like `init`/`update`/`spawn`
 				// commonly also exist as free procs).
-				if sym, ok := resolve_location_sibling_method(data.ast_context, data.position_context, n.name); ok {
-					data.symbols[cast(uintptr)node] = SymbolAndNode {
-						node   = n,
-						symbol = sym,
+				//
+				// The compiler's rewrite only applies to the bare callee of a
+				// call, and only when no local shadows the name — bind under
+				// exactly those conditions, or rename would rewrite locals and
+				// type identifiers that merely share a method's name.
+				sibling_bound := false
+				if data.position_context.call != nil {
+					if call_expr, call_ok := data.position_context.call.derived.(^ast.Call_Expr); call_ok && call_expr.expr == node {
+						if _, has_local := get_local(data.ast_context^, n^); !has_local {
+							if sym, ok := resolve_location_sibling_method(data.ast_context, data.position_context, n.name); ok {
+								data.symbols[cast(uintptr)node] = SymbolAndNode {
+									node   = n,
+									symbol = sym,
+								}
+								sibling_bound = true
+							}
+						}
 					}
-				} else if symbol, ok := resolve_location_identifier(data.ast_context, n^); ok {
-					data.symbols[cast(uintptr)node] = SymbolAndNode {
-						node   = n,
-						symbol = symbol,
+				}
+				if !sibling_bound {
+					if symbol, ok := resolve_location_identifier(data.ast_context, n^); ok {
+						data.symbols[cast(uintptr)node] = SymbolAndNode {
+							node   = n,
+							symbol = symbol,
+						}
 					}
 				}
 			}
