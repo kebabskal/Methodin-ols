@@ -82,11 +82,18 @@ add_generate_method_action :: proc(
 	params := ""
 	if position_context.call != nil {
 		if call, cok := position_context.call.derived.(^ast.Call_Expr); cok {
-			params = infer_param_list(ast_context, call.args)
+			params_ok: bool
+			params, params_ok = infer_param_list(ast_context, call.args)
+			if !params_ok {
+				return
+			}
 		}
 	}
 
-	pos, indent := method_insert_point(st, src)
+	pos, indent, pos_ok := struct_member_insert_point(st, src)
+	if !pos_ok {
+		return
+	}
 	stub := strings.concatenate(
 		{indent, method_name, " :: proc(", params, ") {\n", indent, "\t\n", indent, "}\n"},
 		context.temp_allocator,
@@ -116,30 +123,53 @@ add_generate_method_action :: proc(
 }
 
 // Build `a0: T0, a1: T1, ...` from a call's arguments, typed by resolution.
-infer_param_list :: proc(ast_context: ^AstContext, args: []^ast.Expr) -> string {
+// Fails when an argument's type can't be resolved — a plausible-looking but
+// guessed type in the stub is worse than not offering the action.
+infer_param_list :: proc(ast_context: ^AstContext, args: []^ast.Expr) -> (string, bool) {
 	if len(args) == 0 {
-		return ""
+		return "", true
 	}
 	sb := strings.builder_make(context.temp_allocator)
 	for arg, i in args {
 		if i > 0 {
 			strings.write_string(&sb, ", ")
 		}
-		type_str := "int"
+		type_str := ""
 		if sym, ok := resolve_type_expression(ast_context, arg); ok {
-			prefix := ""
-			for _ in 0 ..< sym.pointers {
-				prefix = strings.concatenate({prefix, "^"}, context.temp_allocator)
+			// Untyped constants get their compiler-default type.
+			if untyped, is_untyped := sym.value.(SymbolUntypedValue); is_untyped {
+				switch untyped.type {
+				case .Integer:
+					type_str = "int"
+				case .Float:
+					type_str = "f64"
+				case .Complex:
+					type_str = "complex128"
+				case .Quaternion:
+					type_str = "quaternion256"
+				case .String:
+					type_str = "string"
+				case .Bool:
+					type_str = "bool"
+				}
+			} else {
+				prefix := ""
+				for _ in 0 ..< sym.pointers {
+					prefix = strings.concatenate({prefix, "^"}, context.temp_allocator)
+				}
+				if sym.type_name != "" {
+					type_str = strings.concatenate({prefix, sym.type_name}, context.temp_allocator)
+				} else if sym.name != "" {
+					type_str = strings.concatenate({prefix, sym.name}, context.temp_allocator)
+				}
 			}
-			if sym.type_name != "" {
-				type_str = strings.concatenate({prefix, sym.type_name}, context.temp_allocator)
-			} else if sym.name != "" {
-				type_str = strings.concatenate({prefix, sym.name}, context.temp_allocator)
-			}
+		}
+		if type_str == "" {
+			return "", false
 		}
 		fmt.sbprintf(&sb, "a%d: %s", i, type_str)
 	}
-	return strings.to_string(sb)
+	return strings.to_string(sb), true
 }
 
 // Locate a top-level `Name :: struct { ... }` in the file and return its
@@ -165,16 +195,3 @@ find_struct_type_in_file :: proc(file: ^ast.File, name: string) -> (^ast.Struct_
 	return nil, false
 }
 
-// Insert a new method after the last existing method, else after the last
-// field, else just after the opening brace.
-method_insert_point :: proc(st: ^ast.Struct_Type, src: string) -> (common.Position, string) {
-	if len(st.methods) > 0 {
-		last := st.methods[len(st.methods) - 1]
-		return common.Position{line = last.end.line, character = 0}, get_line_indentation(src, last.pos.offset)
-	}
-	if st.fields != nil && len(st.fields.list) > 0 {
-		last := st.fields.list[len(st.fields.list) - 1]
-		return common.Position{line = last.end.line, character = 0}, get_line_indentation(src, last.pos.offset)
-	}
-	return common.Position{line = st.fields.open.line, character = 0}, "\t"
-}

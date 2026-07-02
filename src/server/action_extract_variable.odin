@@ -30,6 +30,10 @@ add_extract_variable_action :: proc(
 	}
 
 	src := document.ast.src
+	if !hoist_preserves_semantics(src, stmt, expr) {
+		return
+	}
+
 	expr_text := src[expr.pos.offset:expr.end.offset]
 	indent := get_line_indentation(src, stmt.pos.offset)
 	name := "new_variable"
@@ -102,6 +106,10 @@ add_extract_field_action :: proc(
 	// selection must sit inside a statement (a method body), which
 	// find_extractable_expr already guarantees.
 	src := document.ast.src
+	if !hoist_preserves_semantics(src, stmt, expr) {
+		return
+	}
+
 	expr_text := src[expr.pos.offset:expr.end.offset]
 
 	type_str, type_ok := expr_type_string(ast_context, expr)
@@ -112,7 +120,10 @@ add_extract_field_action :: proc(
 	name := "new_field"
 
 	// Edit 1: insert `name: T,` into the struct, after the last field.
-	field_pos, field_indent := struct_field_insert_point(st, src)
+	field_pos, field_indent, field_ok := struct_member_insert_point(st, src, prefer_fields = true)
+	if !field_ok {
+		return
+	}
 	field_edit := TextEdit {
 		range   = {start = field_pos, end = field_pos},
 		newText = strings.concatenate({field_indent, name, ": ", type_str, ",\n"}, context.temp_allocator),
@@ -175,18 +186,91 @@ expr_type_string :: proc(ast_context: ^AstContext, expr: ^ast.Expr) -> (string, 
 	return "", false
 }
 
-// Where to insert a new field: after the last existing field, else before the
-// first method, else just after the opening brace. Returns (position, indent).
-struct_field_insert_point :: proc(st: ^ast.Struct_Type, src: string) -> (common.Position, string) {
-	if st.fields != nil && len(st.fields.list) > 0 {
-		last := st.fields.list[len(st.fields.list) - 1]
-		return common.Position{line = last.end.line, character = 0}, get_line_indentation(src, last.pos.offset)
+// Refuses hoists that would change behavior. The declaration is inserted on
+// the line above the enclosing statement, so:
+//   - the statement must be one whose evaluation is unconditional relative to
+//     that line (no loops — a hoist out of a `for` header turns per-iteration
+//     evaluation into once-before; no `if`/`switch` — a hoist above the guard
+//     evaluates what the guard was protecting)
+//   - the statement must start its own line (a `do`-body or `case x: stmt`
+//     shares a line; a column-0 insert would tear it apart)
+//   - the expression must not sit in a conditionally-evaluated position
+//     inside the statement (`&&`/`||` right operand, ternary arms, `or_else`
+//     fallback) or inside a nested proc literal (different scope)
+hoist_preserves_semantics :: proc(src: string, stmt: ^ast.Stmt, expr: ^ast.Expr) -> bool {
+	#partial switch _ in stmt.derived {
+	case ^ast.Expr_Stmt, ^ast.Assign_Stmt, ^ast.Value_Decl, ^ast.Return_Stmt:
+	// evaluation reaches the statement iff it reaches the inserted line
+	case:
+		return false
 	}
-	if len(st.methods) > 0 {
-		first := st.methods[0]
-		return common.Position{line = first.pos.line - 1, character = 0}, get_line_indentation(src, first.pos.offset)
+
+	// The statement must be the first thing on its line.
+	indent := get_line_indentation(src, stmt.pos.offset)
+	if len(indent) != stmt.pos.column - 1 {
+		return false
 	}
-	return common.Position{line = st.fields.open.line, character = 0}, "\t"
+
+	Hoist_Walk :: struct {
+		expr:     ^ast.Expr,
+		unsafe_:  bool,
+	}
+
+	contains_expr :: proc(node: ^ast.Node, expr: ^ast.Expr) -> bool {
+		return node != nil && node.pos.offset <= expr.pos.offset && expr.end.offset <= node.end.offset
+	}
+
+	data := Hoist_Walk {
+		expr = expr,
+	}
+
+	visit :: proc(visitor: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+		if node == nil {
+			return nil
+		}
+		data := cast(^Hoist_Walk)visitor.data
+		if data.unsafe_ {
+			return nil
+		}
+		if node == cast(^ast.Node)data.expr {
+			return nil // reached the expression itself; nothing below matters
+		}
+		if !contains_expr(node, data.expr) {
+			return nil
+		}
+
+		#partial switch n in node.derived {
+		case ^ast.Proc_Lit:
+			data.unsafe_ = true
+		case ^ast.Binary_Expr:
+			if n.op.kind == .Cmp_And || n.op.kind == .Cmp_Or {
+				if contains_expr(n.right, data.expr) {
+					data.unsafe_ = true
+				}
+			}
+		case ^ast.Ternary_If_Expr:
+			if contains_expr(n.x, data.expr) || contains_expr(n.y, data.expr) {
+				data.unsafe_ = true
+			}
+		case ^ast.Ternary_When_Expr:
+			if contains_expr(n.x, data.expr) || contains_expr(n.y, data.expr) {
+				data.unsafe_ = true
+			}
+		case ^ast.Or_Else_Expr:
+			if contains_expr(n.y, data.expr) {
+				data.unsafe_ = true
+			}
+		}
+		return visitor
+	}
+
+	visitor := ast.Visitor {
+		visit = visit,
+		data  = &data,
+	}
+	ast.walk(&visitor, stmt)
+
+	return !data.unsafe_
 }
 
 // An expression worth extracting into a variable (a value-producing expression,

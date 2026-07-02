@@ -649,6 +649,26 @@ expect_action_edits :: proc(
 	log.errorf("Action %q not offered; got %v", action_title, actions)
 }
 
+// Asserts that no offered action carries the given title — for guards that
+// must refuse to offer a semantics-changing refactor.
+expect_action_not_offered :: proc(t: ^testing.T, src: ^Source, range: common.Range, action_title: string) {
+	setup(src)
+	defer teardown(src)
+
+	actions, ok := server.get_code_actions(src.document, range, &src.config)
+	if !ok {
+		log.error("Failed to get code actions")
+		return
+	}
+
+	for action in actions {
+		if action.title == action_title {
+			log.errorf("Action %q offered but must not be; got %v", action_title, actions)
+			return
+		}
+	}
+}
+
 expect_action :: proc(t: ^testing.T, src: ^Source, expect_action_names: []string) {
 	setup(src)
 	defer teardown(src)

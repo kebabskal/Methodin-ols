@@ -79,3 +79,67 @@ f :: proc(x: int) -> int {
 
 	test.expect_action_edits(t, &source, range, "Extract local variable", check)
 }
+
+// Hoisting an expression out of an `if` would evaluate it above the guard
+// that protects it — never offered for guarded statements.
+@(test)
+extract_variable_refuses_hoist_past_guard :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+run :: proc(p: ^int) {
+	if p != nil do use(p^)
+}
+use :: proc(a: int) {}
+`,
+		config = {enable_code_action_extract_variable = true},
+	}
+	// select `p^` inside the guarded body
+	range := common.Range {
+		start = {line = 2, character = 19},
+		end   = {line = 2, character = 21},
+	}
+	test.expect_action_not_offered(t, &source, range, "Extract local variable")
+}
+
+// Hoisting out of a loop condition turns per-iteration evaluation into
+// once-before-the-loop.
+@(test)
+extract_variable_refuses_loop_header :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+run :: proc(a: int) {
+	for next_value(a) > 0 {
+	}
+}
+next_value :: proc(a: int) -> int { return a - 1 }
+`,
+		config = {enable_code_action_extract_variable = true},
+	}
+	// select `next_value(a)` in the for condition
+	range := common.Range {
+		start = {line = 2, character = 5},
+		end   = {line = 2, character = 18},
+	}
+	test.expect_action_not_offered(t, &source, range, "Extract local variable")
+}
+
+// The right side of `&&` only evaluates when the left is true — hoisting it
+// unconditionally breaks short-circuiting.
+@(test)
+extract_variable_refuses_short_circuit_rhs :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+run :: proc(p: ^int) {
+	ok := p != nil && p^ > 0
+	_ = ok
+}
+`,
+		config = {enable_code_action_extract_variable = true},
+	}
+	// select `p^ > 0`, the rhs of &&
+	range := common.Range {
+		start = {line = 2, character = 19},
+		end   = {line = 2, character = 25},
+	}
+	test.expect_action_not_offered(t, &source, range, "Extract local variable")
+}
