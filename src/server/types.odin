@@ -594,8 +594,29 @@ TextDocumentEdit :: struct {
 	edits:        []TextEdit,
 }
 
+// A `create` resource operation for `WorkspaceEdit.documentChanges`. The client
+// discriminates documentChanges elements by the presence of `kind`, so a
+// CreateFile carries `kind: "create"` while a TextDocumentEdit omits it.
+CreateFile :: struct {
+	kind: string, // always "create"
+	uri:  string,
+}
+
+// One entry in `WorkspaceEdit.documentChanges`. The custom marshaller emits a
+// union as its active variant directly, so this serialises as either a
+// TextDocumentEdit object or a CreateFile object.
+DocumentChange :: union {
+	TextDocumentEdit,
+	CreateFile,
+}
+
 WorkspaceEdit :: struct {
-	changes: map[string][]TextEdit,
+	changes:         map[string][]TextEdit,
+	// When set, resource-aware edits (e.g. creating a new file) that plain
+	// `changes` can't express. Nil for the common case; the marshaller omits
+	// nil union fields, and a client that receives documentChanges ignores
+	// `changes`.
+	documentChanges: Maybe([]DocumentChange),
 }
 
 WorkspaceSymbolParams :: struct {

@@ -37,13 +37,13 @@ run :: proc(a: int, b: int) {
 			strings.write_string(&joined, "\n----\n")
 		}
 		all := strings.to_string(joined)
-		testing.expectf(t, strings.contains(all, "extracted_method :: proc(a: int, b: int) {"), "proc signature wrong:\n%s", all)
+		testing.expectf(t, strings.contains(all, "extracted_proc :: proc(a: int, b: int) {"), "proc signature wrong:\n%s", all)
 		testing.expectf(t, strings.contains(all, "c := a + b"), "body missing statement:\n%s", all)
 		testing.expectf(t, strings.contains(all, "helper(c)"), "body missing statement:\n%s", all)
-		testing.expectf(t, strings.contains(all, "extracted_method(a, b)"), "call missing:\n%s", all)
+		testing.expectf(t, strings.contains(all, "extracted_proc(a, b)"), "call missing:\n%s", all)
 	}
 
-	test.expect_action_edits(t, &source, range, "Extract method", check)
+	test.expect_action_edits(t, &source, range, "Extract proc", check)
 }
 
 // A selection containing `return` must not be extractable: the return would
@@ -66,7 +66,7 @@ use :: proc(a: int) {}
 		start = {line = 2, character = 1},
 		end   = {line = 4, character = 2},
 	}
-	test.expect_action_not_offered(t, &source, range, "Extract method")
+	test.expect_action_not_offered(t, &source, range, "Extract proc")
 }
 
 // A selection containing `defer` must not be extractable: the defer would
@@ -87,7 +87,7 @@ use :: proc(a: int) {}
 		start = {line = 2, character = 1},
 		end   = {line = 3, character = 7},
 	}
-	test.expect_action_not_offered(t, &source, range, "Extract method")
+	test.expect_action_not_offered(t, &source, range, "Extract proc")
 }
 
 // A declaration inside the selection that is used after it would become
@@ -108,7 +108,7 @@ use :: proc(a: int) {}
 		start = {line = 2, character = 1},
 		end   = {line = 2, character = 11},
 	}
-	test.expect_action_not_offered(t, &source, range, "Extract method")
+	test.expect_action_not_offered(t, &source, range, "Extract proc")
 }
 
 // A write to a captured (by-value) local would stop updating the caller's
@@ -130,7 +130,7 @@ use :: proc(a: int) {}
 		start = {line = 3, character = 1},
 		end   = {line = 3, character = 11},
 	}
-	test.expect_action_not_offered(t, &source, range, "Extract method")
+	test.expect_action_not_offered(t, &source, range, "Extract proc")
 }
 
 // A whole loop (with its unlabeled break inside) is fine to extract — the
@@ -159,5 +159,5 @@ use :: proc(a: int) {}
 	check :: proc(t: ^testing.T, edits: []server.TextEdit) {
 		testing.expect(t, len(edits) == 2, "expected 2 edits (proc + call)")
 	}
-	test.expect_action_edits(t, &source, range, "Extract method", check)
+	test.expect_action_edits(t, &source, range, "Extract proc", check)
 }

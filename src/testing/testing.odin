@@ -649,6 +649,36 @@ expect_action_edits :: proc(
 	log.errorf("Action %q not offered; got %v", action_title, actions)
 }
 
+// Like expect_action_edits, but exposes the action's documentChanges — for
+// resource-aware actions (e.g. ones that create a file) whose edits don't live
+// in `changes`.
+expect_action_document_changes :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	range: common.Range,
+	action_title: string,
+	check: proc(t: ^testing.T, changes: []server.DocumentChange),
+) {
+	setup(src)
+	defer teardown(src)
+
+	actions, ok := server.get_code_actions(src.document, range, &src.config)
+	if !ok {
+		log.error("Failed to get code actions")
+		return
+	}
+
+	for action in actions {
+		if action.title == action_title {
+			changes, _ := action.edit.documentChanges.?
+			check(t, changes)
+			return
+		}
+	}
+
+	log.errorf("Action %q not offered; got %v", action_title, actions)
+}
+
 // Asserts that no offered action carries the given title — for guards that
 // must refuse to offer a semantics-changing refactor.
 expect_action_not_offered :: proc(t: ^testing.T, src: ^Source, range: common.Range, action_title: string) {

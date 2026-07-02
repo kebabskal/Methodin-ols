@@ -7,41 +7,53 @@ import "core:strings"
 
 import "src:common"
 
-// Extract method: the user selects one or more whole statements inside a
+// Extract proc: the user selects one or more whole statements inside a
 // procedure body; the action moves them into a new top-level procedure and
 // replaces the selection with a call to it. Local variables that the selection
 // reads but that are declared *before* it become value parameters (their types
-// are taken from the declaration).
+// are taken from the declaration). Two variants are offered — inserting the new
+// proc into the current file, or creating a sibling file in the package for it.
 //
 // The action is only offered when the resulting code keeps the original
 // semantics: selections that return/defer/branch out of themselves, declare
 // something the code after the selection still uses, or write to a captured
 // (by-value) parameter are refused rather than silently miscompiled.
 
-@(private = "package")
-add_extract_method_action :: proc(
+// The pieces both proc-extraction variants need: the parameter list and body of
+// the new proc, plus the call that replaces the selection and the range it
+// replaces. `top_decl` anchors the same-file insertion point.
+Proc_Extraction :: struct {
+	param_list: string, // e.g. "a: int, b: int"
+	body:       string, // the selected statements, each on its own tab-indented line
+	call_text:  string, // e.g. "extracted_proc(a, b)"
+	replace:    common.Range,
+	top_decl:   ^ast.Node,
+}
+
+// Validates the selection, collects captured params, and builds the shared
+// pieces. ok=false when the selection can't be safely extracted.
+prepare_proc_extraction :: proc(
 	ast_context: ^AstContext,
 	document: ^Document,
 	range: common.Range,
-	uri: string,
-	actions: ^[dynamic]CodeAction,
+	proc_name: string,
+) -> (
+	Proc_Extraction,
+	bool,
 ) {
 	sel, ok := common.get_absolute_range(range, document.text)
 	if !ok || sel.start == sel.end {
-		return
+		return {}, false
 	}
 
 	stmts, block, top_decl, found := find_selected_statements(&document.ast, sel)
 	if !found || len(stmts) == 0 {
-		return
+		return {}, false
 	}
 
 	if !extraction_preserves_semantics(ast_context, stmts, block, sel) {
-		return
+		return {}, false
 	}
-
-	src := document.ast.src
-	method_name := "extracted_method"
 
 	// Captured parameters: identifiers used in the selection that resolve to a
 	// local declared before the selection.
@@ -49,8 +61,10 @@ add_extract_method_action :: proc(
 	ast_context.current_package = ast_context.document_package
 	params, params_ok := collect_captured_params(ast_context, stmts, sel)
 	if !params_ok {
-		return
+		return {}, false
 	}
+
+	src := document.ast.src
 
 	// Build the parameter list and the matching argument list.
 	param_list := strings.builder_make(context.temp_allocator)
@@ -66,40 +80,13 @@ add_extract_method_action :: proc(
 		strings.write_string(&arg_list, p.name)
 	}
 
-	// The new procedure, inserted just above the enclosing top-level decl.
-	proc_indent := get_line_indentation(src, top_decl.pos.offset)
+	// The new proc is always top-level, so its body is re-based onto a single
+	// tab of indentation.
 	body := strings.builder_make(context.temp_allocator)
 	for s in stmts {
-		stmt_indent := get_line_indentation(src, s.pos.offset)
-		strings.write_string(&body, proc_indent)
 		strings.write_byte(&body, '\t')
-		// Re-base the statement onto a single tab of indentation.
-		_ = stmt_indent
 		strings.write_string(&body, src[s.pos.offset:s.end.offset])
 		strings.write_byte(&body, '\n')
-	}
-
-	new_proc := strings.concatenate(
-		{
-			method_name,
-			" :: proc(",
-			strings.to_string(param_list),
-			") {\n",
-			strings.to_string(body),
-			proc_indent,
-			"}\n\n",
-			proc_indent,
-		},
-		context.temp_allocator,
-	)
-
-	insert_pos := common.Position {
-		line      = top_decl_insert_line(top_decl),
-		character = 0,
-	}
-	insert_edit := TextEdit {
-		range   = {start = insert_pos, end = insert_pos},
-		newText = new_proc,
 	}
 
 	// Replace the selected statements with a single call. The range starts at
@@ -108,21 +95,60 @@ add_extract_method_action :: proc(
 	first := stmts[0]
 	last := stmts[len(stmts) - 1]
 	call_text := strings.concatenate(
-		{method_name, "(", strings.to_string(arg_list), ")"},
+		{proc_name, "(", strings.to_string(arg_list), ")"},
 		context.temp_allocator,
 	)
-	replace_range := common.Range {
-		start = common.get_token_range(first^, src).start,
-		end   = common.get_token_range(last^, src).end,
+
+	return Proc_Extraction {
+			param_list = strings.to_string(param_list),
+			body = strings.to_string(body),
+			call_text = call_text,
+			replace = {
+				start = common.get_token_range(first^, src).start,
+				end = common.get_token_range(last^, src).end,
+			},
+			top_decl = top_decl,
+		},
+		true
+}
+
+// Replaces the last path segment of a `file://` URI with `filename`, yielding a
+// URI for a sibling file in the same directory.
+sibling_file_uri :: proc(uri: string, filename: string) -> (string, bool) {
+	slash := strings.last_index(uri, "/")
+	if slash < 0 {
+		return "", false
 	}
-	replace_edit := TextEdit {
-		range   = replace_range,
-		newText = call_text,
+	return strings.concatenate({uri[:slash + 1], filename}, context.temp_allocator), true
+}
+
+@(private = "package")
+add_extract_proc_action :: proc(
+	ast_context: ^AstContext,
+	document: ^Document,
+	range: common.Range,
+	uri: string,
+	actions: ^[dynamic]CodeAction,
+) {
+	proc_name := "extracted_proc"
+	ex, ok := prepare_proc_extraction(ast_context, document, range, proc_name)
+	if !ok {
+		return
+	}
+
+	// The new procedure, inserted just above the enclosing top-level decl.
+	new_proc := strings.concatenate(
+		{proc_name, " :: proc(", ex.param_list, ") {\n", ex.body, "}\n\n"},
+		context.temp_allocator,
+	)
+	insert_pos := common.Position {
+		line      = top_decl_insert_line(ex.top_decl),
+		character = 0,
 	}
 
 	textEdits := make([dynamic]TextEdit, context.temp_allocator)
-	append(&textEdits, insert_edit)
-	append(&textEdits, replace_edit)
+	append(&textEdits, TextEdit{range = {start = insert_pos, end = insert_pos}, newText = new_proc})
+	append(&textEdits, TextEdit{range = ex.replace, newText = ex.call_text})
 
 	workspaceEdit: WorkspaceEdit
 	workspaceEdit.changes = make(map[string][]TextEdit, 0, context.temp_allocator)
@@ -133,7 +159,68 @@ add_extract_method_action :: proc(
 		CodeAction {
 			kind = "refactor.extract",
 			isPreferred = false,
-			title = "Extract method",
+			title = "Extract proc",
+			edit = workspaceEdit,
+		},
+	)
+}
+
+// Like "Extract proc", but the new procedure lands in a freshly created sibling
+// file in the same package, and the selection is replaced with a call. Uses
+// documentChanges (create-file + edits) since a plain `changes` edit cannot
+// create a file.
+@(private = "package")
+add_extract_proc_to_new_file_action :: proc(
+	ast_context: ^AstContext,
+	document: ^Document,
+	range: common.Range,
+	uri: string,
+	actions: ^[dynamic]CodeAction,
+) {
+	proc_name := "extracted_proc"
+	ex, ok := prepare_proc_extraction(ast_context, document, range, proc_name)
+	if !ok {
+		return
+	}
+
+	pkg := document.ast.pkg_name
+	if pkg == "" {
+		return
+	}
+
+	new_uri, uri_ok := sibling_file_uri(uri, "extracted_proc.odin")
+	if !uri_ok {
+		return
+	}
+
+	file_content := strings.concatenate(
+		{"package ", pkg, "\n\n", proc_name, " :: proc(", ex.param_list, ") {\n", ex.body, "}\n"},
+		context.temp_allocator,
+	)
+
+	zero := common.Position{line = 0, character = 0}
+	new_file_edits := make([dynamic]TextEdit, context.temp_allocator)
+	append(&new_file_edits, TextEdit{range = {start = zero, end = zero}, newText = file_content})
+
+	call_edits := make([dynamic]TextEdit, context.temp_allocator)
+	append(&call_edits, TextEdit{range = ex.replace, newText = ex.call_text})
+
+	// Order matters: create the file before writing into it.
+	changes := make([dynamic]DocumentChange, context.temp_allocator)
+	create: DocumentChange = CreateFile{kind = "create", uri = new_uri}
+	fill: DocumentChange = TextDocumentEdit{textDocument = {uri = new_uri}, edits = new_file_edits[:]}
+	call: DocumentChange = TextDocumentEdit{textDocument = {uri = uri}, edits = call_edits[:]}
+	append(&changes, create, fill, call)
+
+	workspaceEdit: WorkspaceEdit
+	workspaceEdit.documentChanges = changes[:]
+
+	append(
+		actions,
+		CodeAction {
+			kind = "refactor.extract",
+			isPreferred = false,
+			title = "Extract proc to new file",
 			edit = workspaceEdit,
 		},
 	)

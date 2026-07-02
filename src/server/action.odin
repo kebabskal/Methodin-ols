@@ -116,7 +116,16 @@ get_code_actions :: proc(document: ^Document, range: common.Range, config: ^comm
 	}
 
 	if config.enable_code_action_extract_method {
-		add_extract_method_action(
+		// Extract selection into a new top-level proc, in this file...
+		add_extract_proc_action(
+			&ast_context,
+			document,
+			range,
+			strings.clone(document.uri.uri, context.temp_allocator),
+			&actions,
+		)
+		// ...or into a freshly created sibling file in the package.
+		add_extract_proc_to_new_file_action(
 			&ast_context,
 			document,
 			range,
