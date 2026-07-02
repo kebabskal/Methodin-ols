@@ -452,13 +452,23 @@ is_assign_statement_ending_with_call :: proc(stmt: ^ast.Stmt) -> bool {
 }
 
 @(private)
+// The gofmt-style opt-in for keeping a construct broken: the closing
+// token sits on a line below the *last element*, i.e. the user
+// deliberately put it on its own line. Comparing against the open token
+// instead would also catch constructs that merely wrapped for width,
+// permanently locking them into a broken layout.
+closes_on_own_line :: proc(last_end: tokenizer.Pos, close: tokenizer.Pos) -> bool {
+	return close.line > last_end.line
+}
+
+@(private)
 // True when the condition is a parenthesized expression the user laid out
 // with its closing `)` on its own line (the same gofmt-style opt-in used for
 // `Paren_Expr` / `Comp_Lit` / `Call_Expr`). Such a condition already breaks
 // itself vertically, so the `if` should not also `hang` it.
 is_paren_broken_cond :: proc(expr: ^ast.Expr) -> bool {
 	if paren, ok := expr.derived.(^ast.Paren_Expr); ok {
-		return paren.close.line > paren.open.line
+		return paren.expr != nil && closes_on_own_line(paren.expr.end, paren.close)
 	}
 	return false
 }
@@ -1286,7 +1296,7 @@ visit_stmt :: proc(
 			// want here — the user already opted in.
 			force_multiline := false
 			if paren, is_paren := result.derived.(^ast.Paren_Expr); is_paren {
-				if paren.close.line > paren.open.line {
+				if paren.expr != nil && closes_on_own_line(paren.expr.end, paren.close) {
 					force_multiline = true
 				}
 				result = paren.expr
@@ -1839,12 +1849,12 @@ visit_expr :: proc(
 			document = enforce_break(document, Document_Group_Options{id = "call_expr"})
 		} else if contains_do {
 			document = enforce_fit(document)
-		} else if len(v.args) > 0 && v.close.line > v.open.line {
+		} else if len(v.args) > 0 && closes_on_own_line(v.args[len(v.args) - 1].end, v.close) {
 			// gofmt-style trailing-paren rule (same as Paren_Expr below): if the
 			// user put the closing `)` on its own line, keep the call broken across
 			// lines even when it would fit. Lets the user opt into a vertical
-			// argument layout by where they place `)`; a single-line call (close on
-			// the same line as open) still collapses through the group path.
+			// argument layout by where they place `)`; a call whose `)` follows
+			// the last argument still collapses through the group path.
 			document = enforce_break(document, Document_Group_Options{id = "call_expr"})
 		} else {
 			document = group(document, Document_Group_Options{id = "call_expr"})
@@ -1861,10 +1871,10 @@ visit_expr :: proc(
 		// gofmt-style trailing-paren rule: if the closing `)` is on its
 		// own line in the source, keep the expression multi-line even
 		// when it would fit. Lets the user opt into vertical layout for
-		// long `&&` / `||` chains without configuration. Single-line
-		// parens still go through the original group path so existing
-		// snapshots stay byte-identical.
-		if v.close.line > v.open.line {
+		// long `&&` / `||` chains without configuration. Parens whose `)`
+		// follows the expression still go through the original group path
+		// so existing snapshots stay byte-identical.
+		if v.expr != nil && closes_on_own_line(v.expr.end, v.close) {
 			document = enforce_break(cons(
 				text("("),
 				nest(cons(break_with("", true), visit_expr(p, v.expr))),
@@ -1943,7 +1953,7 @@ visit_expr :: proc(
 		// user put the closing `}` on its own line, keep the literal broken across
 		// lines even when it would fit and even for positional elements (e.g.
 		// `vec3{x, y, z}`). A single-line literal still collapses.
-		should_newline |= len(v.elems) > 0 && v.close.line > v.open.line
+		should_newline |= len(v.elems) > 0 && closes_on_own_line(v.elems[len(v.elems) - 1].end, v.close)
 
 		if should_newline {
 			document = cons_with_nopl(document, visit_begin_brace(p, v.pos, .Comp_Lit))
