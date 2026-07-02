@@ -206,3 +206,44 @@ methodin_struct_constant_completion :: proc(t: ^testing.T) {
 	}
 	test.expect_completion_labels(t, &source, ".", {"MAX_ENTITIES"})
 }
+
+// Rvalue receivers: completion works on temporaries (function results,
+// type-scoped constants) — resolution is type-based.
+@(test)
+methodin_rvalue_receiver_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		World :: struct {
+			hp: int,
+			describe :: proc() {},
+		}
+		make_world :: proc() -> World {
+			return {}
+		}
+		main :: proc() {
+			make_world().{*}
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"describe"})
+}
+
+// Chained method completion on a type-scoped constant.
+@(test)
+methodin_constant_chain_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Vec3 :: distinct [3]f32
+		impl Vec3 {
+			UP :: Vec3{0, 1, 0},
+			scaled :: proc(v: Vec3, f: f32) -> Vec3 { return v },
+		}
+		main :: proc() {
+			v := Vec3.UP.{*}
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"scaled"})
+}

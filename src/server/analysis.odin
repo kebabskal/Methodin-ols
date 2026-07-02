@@ -2081,6 +2081,19 @@ resolve_selector_expression :: proc(ast_context: ^AstContext, node: ^ast.Selecto
 		// see imports that are used only through `x.method()`.
 		if node.field != nil {
 			if ts_symbol, ok := try_resolve_type_scoped_member(ast_context, node.expr, selector, node.field.name); ok {
+				// Type resolution wants the member's TYPE so chains keep
+				// resolving (`Vec3.UP.scaled(...)`); the location path in
+				// resolve_symbol_selector returns the constant itself so
+				// goto-def lands on the declaration.
+				if gv, is_generic := ts_symbol.value.(SymbolGenericValue); is_generic {
+					if resolved, rok := resolve_type_expression(ast_context, gv.expr); rok {
+						// The chain continues over a VALUE of that type, not
+						// the type itself — downstream gates (method
+						// completion, field access) key off this.
+						resolved.type = .Variable
+						return resolved, true
+					}
+				}
 				return ts_symbol, true
 			}
 			if ufcs_symbol, ok := try_resolve_ufcs_method(ast_context, selector, node.field.name); ok {
