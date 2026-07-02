@@ -5859,3 +5859,21 @@ ast_completion_skip_test_procs :: proc(t: ^testing.T) {
 
 	test.expect_completion_docs(t, &source, "", {"test.foo :: proc()"}, {"test.foo_test :: proc()"})
 }
+
+// Methodin: struct fields with default values parse and complete normally.
+@(test)
+ast_struct_field_defaults_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		World :: struct {
+			hp:   int = 100,
+			name: string = "unnamed",
+		}
+		main :: proc() {
+			w: World
+			w.{*}
+		}
+		`,
+	}
+	test.expect_completion_labels(t, &source, ".", {"hp", "name"})
+}

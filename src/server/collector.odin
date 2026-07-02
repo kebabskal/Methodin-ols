@@ -751,7 +751,30 @@ register_in_struct_method :: proc(
 	}
 
 	proc_lit, pl_ok := vd.values[0].derived.(^ast.Proc_Lit)
-	if !pl_ok || proc_lit.type == nil do return
+	if !pl_ok {
+		// Methodin: a non-proc `Name :: <expr>` member is a type-scoped
+		// constant (`Vec3.UP`) or nested type alias (`World.Id`). The
+		// compiler lifts it to a package-scope `<Struct>__<name>` constant;
+		// register the same symbol so `Type.NAME` selector resolution and
+		// completion find it.
+		mangled := strings.concatenate({struct_name, "__", name_ident.name}, context.temp_allocator)
+
+		symbol := Symbol{}
+		symbol.range = common.get_token_range(name_ident^, file.src)
+		symbol.name = get_index_unique_string(collection, mangled)
+		symbol.type = .Constant
+		symbol.pkg = pkg_name
+		symbol.uri = get_index_unique_string(collection, uri)
+		symbol.value = collect_generic(collection, vd.values[0], package_map, uri)
+
+		key := get_index_unique_string(collection, mangled)
+		if existing, ok := pkg.symbols[key]; ok {
+			free_symbol(existing, collection.allocator)
+		}
+		pkg.symbols[key] = symbol
+		return
+	}
+	if proc_lit.type == nil do return
 
 	value := collect_procedure_fields(
 		collection,

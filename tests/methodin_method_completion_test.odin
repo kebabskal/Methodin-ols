@@ -168,3 +168,41 @@ methodin_union_dispatch_completion_using :: proc(t: ^testing.T) {
 	}
 	test.expect_completion_labels(t, &source, ".", {"introduce"})
 }
+
+// Methodin: `Vec3.` with the receiver written as the type's own name offers
+// its type-scoped members (in-struct/impl constants) under unmangled names.
+@(test)
+methodin_type_scoped_constant_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Vec3 :: distinct [3]f32
+		impl Vec3 {
+			UP :: Vec3{0, 1, 0},
+			RIGHT :: Vec3{1, 0, 0},
+		}
+		main :: proc() {
+			v := Vec3.{*}
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"UP", "RIGHT"})
+}
+
+// Struct-body constants complete the same way.
+@(test)
+methodin_struct_constant_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		World :: struct {
+			frame: int,
+			MAX_ENTITIES :: 128,
+		}
+		main :: proc() {
+			n := World.{*}
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"MAX_ENTITIES"})
+}

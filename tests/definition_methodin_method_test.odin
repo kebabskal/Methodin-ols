@@ -92,3 +92,24 @@ ast_ufcs_in_scope_receiver_match_resolves :: proc(t: ^testing.T) {
 
 	test.expect_definition_locations(t, &source, {location})
 }
+
+// Goto-definition on a type-scoped constant lands on its declaration.
+@(test)
+definition_type_scoped_constant :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+Vec3 :: distinct [3]f32
+impl Vec3 {
+	UP :: Vec3{0, 1, 0},
+}
+main :: proc() {
+	v := Vec3.U{*}P
+	_ = v
+}
+`,
+	}
+	location := common.Location {
+		range = {start = {line = 3, character = 1}, end = {line = 3, character = 3}},
+	}
+	test.expect_definition_locations(t, &source, {location})
+}

@@ -855,6 +855,34 @@ add_soa_field_completion :: proc(
 	}
 }
 
+@(private = "file")
+add_type_scoped_member_completions :: proc(
+	ast_context: ^AstContext,
+	type_symbol: Symbol,
+	results: ^[dynamic]CompletionResult,
+) {
+	if type_symbol.name == "" || type_symbol.pkg == "" {
+		return
+	}
+	try_build_package(type_symbol.pkg)
+	pkg, ok := indexer.index.collection.packages[type_symbol.pkg]
+	if !ok {
+		return
+	}
+	prefix := strings.concatenate({type_symbol.name, "__"}, context.temp_allocator)
+	for name, symbol in pkg.symbols {
+		if !strings.has_prefix(name, prefix) {
+			continue
+		}
+		if should_skip_private_symbol(symbol, ast_context.current_package, ast_context.uri) {
+			continue
+		}
+		member := symbol
+		member.name = name[len(prefix):]
+		append(results, CompletionResult{symbol = member})
+	}
+}
+
 get_selector_completion :: proc(
 	ast_context: ^AstContext,
 	position_context: ^DocumentPositionContext,
@@ -873,6 +901,13 @@ get_selector_completion :: proc(
 
 	if !ok {
 		return is_incomplete
+	}
+
+	// Methodin: `Vec3.{*}` with the receiver written as the type's own name
+	// offers its type-scoped members (lifted `Vec3__*` constants, methods,
+	// nested types) under their unmangled names.
+	if base, base_ok := position_context.selector.derived.(^ast.Ident); base_ok && base.name == selector.name {
+		add_type_scoped_member_completions(ast_context, selector, results)
 	}
 
 	if selector.type != .Variable &&

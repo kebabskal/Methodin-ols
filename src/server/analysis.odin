@@ -2080,6 +2080,9 @@ resolve_selector_expression :: proc(ast_context: ^AstContext, node: ^ast.Selecto
 		// (not just in resolve_symbol_selector) also lets find_unused_imports
 		// see imports that are used only through `x.method()`.
 		if node.field != nil {
+			if ts_symbol, ok := try_resolve_type_scoped_member(ast_context, node.expr, selector, node.field.name); ok {
+				return ts_symbol, true
+			}
 			if ufcs_symbol, ok := try_resolve_ufcs_method(ast_context, selector, node.field.name); ok {
 				return ufcs_symbol, true
 			}
@@ -3718,12 +3721,47 @@ resolve_symbol_selector :: proc(
 	// up as a free procedure declared in the receiver type's owning package
 	// (the same key used to register fake-method entries in the collector).
 	if !found && field != "" {
+		if sym, ok := try_resolve_type_scoped_member(ast_context, selector.expr, symbol, field); ok {
+			return sym, true
+		}
 		if sym, ok := try_resolve_ufcs_method(ast_context, symbol, field); ok {
 			return sym, true
 		}
 	}
 
 	return symbol, true
+}
+
+// Methodin: `Vec3.UP` — a selector whose receiver is written as the TYPE's
+// own name resolves type-scoped members (in-struct/impl constants, nested
+// type aliases) through their lifted `<Type>__<name>` package symbols. The
+// spelling check distinguishes the type-scoped form from an instance
+// selector: `v.up` on `v: Vec3` resolves fields/UFCS instead.
+try_resolve_type_scoped_member :: proc(
+	ast_context: ^AstContext,
+	base_expr: ^ast.Expr,
+	receiver: Symbol,
+	field: string,
+) -> (
+	Symbol,
+	bool,
+) {
+	if base_expr == nil || field == "" || receiver.name == "" {
+		return {}, false
+	}
+	base := base_expr
+	if sel, sok := base.derived.(^ast.Selector_Expr); sok {
+		base = sel.field // `pkg.Vec3` -> `Vec3`
+	}
+	ident, iok := base.derived.(^ast.Ident)
+	if !iok || ident.name != receiver.name {
+		return {}, false
+	}
+	mangled := strings.concatenate({receiver.name, "__", field}, context.temp_allocator)
+	if sym, lok := lookup(mangled, receiver.pkg, ast_context.uri); lok {
+		return sym, true
+	}
+	return {}, false
 }
 
 // try_resolve_ufcs_method searches the indexer's method map for a free proc
