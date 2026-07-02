@@ -209,7 +209,16 @@ print_file :: proc(p: ^Printer, file: ^ast.File) -> string {
 		p.indentation_width = p.config.spaces
 	}
 
-	if p.config.newline_style == .CRLF {
+	// Preserve the source's existing line-ending style rather than imposing the
+	// config's platform default: reformatting must not silently flip LF <-> CRLF.
+	// (default_style is CRLF on Windows, but Odin sources are usually LF — which
+	// turned every reformat on Windows into a line-ending churn.) Fall back to the
+	// configured style only when the source has no line breaks to infer from.
+	if strings.contains(p.src, "\r\n") {
+		p.newline = "\r\n"
+	} else if strings.contains(p.src, "\n") {
+		p.newline = "\n"
+	} else if p.config.newline_style == .CRLF {
 		p.newline = "\r\n"
 	} else {
 		p.newline = "\n"
