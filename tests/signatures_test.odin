@@ -799,3 +799,51 @@ signature_function_inside_when :: proc(t: ^testing.T) {
 
 }
 */
+
+// Methodin: `w.spawn(1,{*}` — the receiver is implicit, so with one comma
+// typed the active parameter is `y` (index 2 counting the synthetic self).
+@(test)
+ast_proc_signature_in_struct_method_position :: proc(t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+		World :: struct {
+			frame: int,
+
+			spawn :: proc(x: int, y: int) {
+			},
+		}
+
+		main :: proc() {
+			w: World
+			w.spawn(2,{*}
+		}
+		`,
+		packages = {},
+	}
+
+	test.expect_signature_parameter_position(t, &source, 2)
+}
+
+// UFCS dot call on a free proc: first typed arg pairs with the second
+// declared parameter.
+@(test)
+ast_proc_signature_ufcs_method_position :: proc(t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+		World :: struct {
+			frame: int,
+		}
+
+		advance :: proc(w: ^World, steps: int) {
+		}
+
+		main :: proc() {
+			w: World
+			w.advance(3{*}
+		}
+		`,
+		packages = {},
+	}
+
+	test.expect_signature_parameter_position(t, &source, 1)
+}

@@ -180,6 +180,12 @@ add_proc_signature :: proc(
 		return active_parameter
 	}
 
+	// Methodin: `x.method(...)` elides the receiver, so the arg being typed
+	// pairs with the parameter one past it (arrow calls already start at 1).
+	if .Method in call.flags && !position_context.arrow {
+		active_parameter += 1
+	}
+
 	seperate_proc_field_arguments(&call)
 
 	if value, ok := call.value.(SymbolProcedureValue); ok {
