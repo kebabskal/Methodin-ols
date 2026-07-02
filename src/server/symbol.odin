@@ -217,6 +217,7 @@ SymbolFlag :: enum {
 	Simd,
 	Parameter, //If the symbol is a procedure argument
 	PolyType,
+	Method, //Resolved through the method index / UFCS: `x.method(...)` elides the first parameter at the call site
 }
 
 SymbolFlags :: bit_set[SymbolFlag]

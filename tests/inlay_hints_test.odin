@@ -254,3 +254,81 @@ ast_inlay_hints_optional_result :: proc(t: ^testing.T) {
 	test.expect_inlay_hints(t, &source)
 }
 
+
+// Methodin: `w.spawn(...)` elides the implicit `self` receiver, so arg 0
+// pairs with the method's first declared parameter — not `self`.
+@(test)
+ast_inlay_hints_in_struct_method_call :: proc(t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+		World :: struct {
+			frame: int,
+
+			spawn :: proc(x: int, y: int) {
+			},
+		}
+
+		main :: proc() {
+			w: World
+			w.spawn([[x = ]]1, [[y = ]]2{*})
+		}
+		`,
+		packages = {},
+		config   = {
+			enable_inlay_hints_params = true,
+		},
+	}
+
+	test.expect_inlay_hints(t, &source)
+}
+
+// UFCS dot call on a free proc: the receiver argument is elided at the call
+// site, so hints start at the second declared parameter.
+@(test)
+ast_inlay_hints_ufcs_method_call :: proc(t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+		World :: struct {
+			frame: int,
+		}
+
+		advance :: proc(w: ^World, steps: int) {
+		}
+
+		main :: proc() {
+			w: World
+			w.advance([[steps = ]]3{*})
+		}
+		`,
+		packages = {},
+		config   = {
+			enable_inlay_hints_params = true,
+		},
+	}
+
+	test.expect_inlay_hints(t, &source)
+}
+
+// A proc-typed struct field called as `h.cb(...)` has no implicit receiver —
+// it must keep its full parameter list.
+@(test)
+ast_inlay_hints_proc_field_call_keeps_all_params :: proc(t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+		Handler :: struct {
+			cb: proc(a: int, b: int),
+		}
+
+		main :: proc() {
+			h: Handler
+			h.cb([[a = ]]1, [[b = ]]2{*})
+		}
+		`,
+		packages = {},
+		config   = {
+			enable_inlay_hints_params = true,
+		},
+	}
+
+	test.expect_inlay_hints(t, &source)
+}

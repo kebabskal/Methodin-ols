@@ -100,10 +100,16 @@ get_inlay_hints :: proc(
 		end_pos := common.token_pos_to_position(call.close, src)
 
 		selector, is_selector_call := call.expr.derived.(^ast.Selector_Expr)
-		is_selector_call &&= selector.op.kind == .Arrow_Right
 
 		symbol_and_node := data.symbols[uintptr(call.expr)] or_return // could not resolve symbol
 		proc_symbol := symbol_and_node.symbol.value.(SymbolProcedureValue) or_return // not a procedure call, e.g. type cast
+
+		// The receiver is elided at the call site for `x->f(...)` and for
+		// `.`-calls that resolved through the method index / UFCS (Methodin
+		// methods carry an implicit `self` as parameter 0). A proc-typed
+		// struct field called as `x.f(...)` has no .Method flag and keeps
+		// its full parameter list.
+		is_selector_call &&= selector.op.kind == .Arrow_Right || .Method in symbol_and_node.symbol.flags
 
 		param_idx := 1 if is_selector_call else 0
 		label_idx := 0

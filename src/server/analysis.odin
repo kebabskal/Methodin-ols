@@ -3742,8 +3742,13 @@ try_resolve_ufcs_method :: proc(
 	Symbol,
 	bool,
 ) {
+	// Every symbol returned here is marked .Method so call-site features
+	// (inlay hints, signature help) know arg 0 pairs with parameter 1 —
+	// the receiver is elided at `x.method(...)` call sites.
+
 	// First try a direct lookup against the receiver type itself.
 	if sym, ok := try_resolve_ufcs_direct(ast_context, receiver, field); ok {
+		sym.flags += {.Method}
 		return sym, true
 	}
 
@@ -3756,6 +3761,7 @@ try_resolve_ufcs_method :: proc(
 		next := make([dynamic]Symbol, context.temp_allocator)
 		for f in frontier {
 			if sym, ok := try_resolve_ufcs_direct(ast_context, f, field); ok {
+				sym.flags += {.Method}
 				return sym, true
 			}
 			ufcs_enqueue_using_children(ast_context, f, &next)
@@ -3770,6 +3776,7 @@ try_resolve_ufcs_method :: proc(
 	// nominal link to, e.g. `v.normalize()` on a [3]f32 resolving to
 	// core:math/linalg.normalize because the file imports linalg.
 	if sym, ok := try_resolve_ufcs_in_scope(ast_context, receiver, field); ok {
+		sym.flags += {.Method}
 		return sym, true
 	}
 
