@@ -72,11 +72,39 @@ build_file_scaffold_completion :: proc(document: ^Document) -> (CompletionItem, 
 	return item, true
 }
 
+// True when the document contains only whitespace and comments — the only
+// state in which the scaffold completion should replace normal completion.
+@(private = "file")
+scaffold_document_blank :: proc(text: []u8) -> bool {
+	i := 0
+	n := len(text)
+	for i < n {
+		c := text[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+			i += 1
+		case c == '/' && i + 1 < n && text[i + 1] == '/':
+			for i < n && text[i] != '\n' do i += 1
+		case c == '/' && i + 1 < n && text[i + 1] == '*':
+			i += 2
+			for i + 1 < n && !(text[i] == '*' && text[i + 1] == '/') do i += 1
+			i = min(i + 2, n)
+		case:
+			return false
+		}
+	}
+	return true
+}
+
 // Lowercase, replace any non-identifier char with `_`, so a directory like
-// `odin-daggers` yields a valid package name `odin_daggers`.
+// `odin-daggers` yields a valid package name `odin_daggers`. A leading digit
+// (`3d-models`) gets a `_` prefix — identifiers can't start with a digit.
 @(private = "file")
 scaffold_sanitize_package :: proc(name: string) -> string {
 	sb := strings.builder_make(context.temp_allocator)
+	if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
+		strings.write_rune(&sb, '_')
+	}
 	for r in name {
 		switch {
 		case r >= 'A' && r <= 'Z':
@@ -121,12 +149,17 @@ get_completion_list :: proc(
 ) {
 	list: CompletionList
 
-	// Methodin: a file with no `package` declaration is fresh/empty — offer a
-	// scaffold that fills in `package <dir>` plus a struct named after the file,
-	// so new files start ready to go.
-	if document.ast.pkg_decl == nil {
+	// Methodin: a file with no `package` declaration and no other content is
+	// fresh — offer a scaffold that fills in `package <dir>` plus a struct named
+	// after the file, so new files start ready to go. A file that has code but
+	// a broken/missing package line (e.g. mid-edit of the package name) must
+	// fall through to normal completion instead of being hijacked, and the
+	// parser bails before producing decls in that case — so check the text.
+	if document.ast.pkg_decl == nil && scaffold_document_blank(document.text[:document.used_text]) {
 		if item, ok := build_file_scaffold_completion(document); ok {
-			list.items = []CompletionItem{item}
+			items := make([]CompletionItem, 1, context.temp_allocator)
+			items[0] = item
+			list.items = items
 			return list, true
 		}
 	}

@@ -3746,27 +3746,19 @@ try_resolve_ufcs_method :: proc(
 	// (inlay hints, signature help) know arg 0 pairs with parameter 1 —
 	// the receiver is elided at `x.method(...)` call sites.
 
-	// First try a direct lookup against the receiver type itself.
-	if sym, ok := try_resolve_ufcs_direct(ast_context, receiver, field); ok {
+	if sym, ok := try_resolve_ufcs_on_type(ast_context, receiver, field); ok {
 		sym.flags += {.Method}
 		return sym, true
 	}
 
-	// Then BFS through `using` fields. First depth that yields any hit wins;
-	// we take the first such hit (the compiler reports the ambiguity).
-	frontier := make([dynamic]Symbol, context.temp_allocator)
-	ufcs_enqueue_using_children(ast_context, receiver, &frontier)
-
-	for len(frontier) > 0 {
-		next := make([dynamic]Symbol, context.temp_allocator)
-		for f in frontier {
-			if sym, ok := try_resolve_ufcs_direct(ast_context, f, field); ok {
-				sym.flags += {.Method}
-				return sym, true
-			}
-			ufcs_enqueue_using_children(ast_context, f, &next)
-		}
-		frontier = next
+	// Union dispatch, mirroring the compiler's parse-time dispatcher
+	// synthesis: `u.method(...)` compiles when every variant has the method,
+	// so resolve against the variants at query time. (Materializing copies
+	// into the union's bucket at collect time went stale whenever the
+	// union's or the variants' file was re-indexed on its own.)
+	if sym, ok := try_resolve_union_dispatch(ast_context, receiver, field); ok {
+		sym.flags += {.Method}
+		return sym, true
 	}
 
 	// Final tier: search the packages in scope at the call site — the current
@@ -3781,6 +3773,161 @@ try_resolve_ufcs_method :: proc(
 	}
 
 	return {}, false
+}
+
+// try_resolve_ufcs_on_type runs the receiver-type tiers of UFCS resolution:
+// a direct method-bucket lookup on the type itself, then a BFS through its
+// `using`-embedded fields. First depth that yields a hit wins (the compiler
+// reports same-depth ambiguity; we take the first hit).
+try_resolve_ufcs_on_type :: proc(
+	ast_context: ^AstContext,
+	receiver: Symbol,
+	field: string,
+) -> (
+	Symbol,
+	bool,
+) {
+	if sym, ok := try_resolve_ufcs_direct(ast_context, receiver, field); ok {
+		return sym, true
+	}
+
+	frontier := make([dynamic]Symbol, context.temp_allocator)
+	ufcs_enqueue_using_children(ast_context, receiver, &frontier)
+
+	for len(frontier) > 0 {
+		next := make([dynamic]Symbol, context.temp_allocator)
+		for f in frontier {
+			if sym, ok := try_resolve_ufcs_direct(ast_context, f, field); ok {
+				return sym, true
+			}
+			ufcs_enqueue_using_children(ast_context, f, &next)
+		}
+		frontier = next
+	}
+
+	return {}, false
+}
+
+// The compiler only synthesises a union dispatcher when every variant has
+// the method, so resolution requires the same: all variants must resolve
+// `field`, and the first variant's method is reported (goto-def/hover land
+// there).
+@(private = "file")
+try_resolve_union_dispatch :: proc(
+	ast_context: ^AstContext,
+	receiver: Symbol,
+	field: string,
+) -> (
+	Symbol,
+	bool,
+) {
+	uv, is_union := receiver.value.(SymbolUnionValue)
+	if !is_union || len(uv.types) == 0 {
+		return {}, false
+	}
+
+	// Variant type exprs are written in the union's own package scope.
+	set_ast_package_set_scoped(ast_context, receiver.pkg)
+
+	found: Symbol
+	for variant_expr, i in uv.types {
+		variant, v_ok := resolve_type_expression(ast_context, variant_expr)
+		if !v_ok {
+			return {}, false
+		}
+		sym, m_ok := try_resolve_ufcs_on_type(ast_context, variant, field)
+		if !m_ok {
+			return {}, false
+		}
+		if i == 0 {
+			found = sym
+		}
+	}
+	return found, true
+}
+
+// union_dispatch_methods returns a sample method symbol (the first
+// variant's) for every method name that resolves on ALL of the union's
+// variants — the query-time mirror of the compiler's dispatcher synthesis,
+// used by completion on a union receiver. Results are temp-allocated.
+union_dispatch_methods :: proc(ast_context: ^AstContext, union_symbol: Symbol) -> []Symbol {
+	uv, is_union := union_symbol.value.(SymbolUnionValue)
+	if !is_union || len(uv.types) == 0 {
+		return {}
+	}
+
+	set_ast_package_set_scoped(ast_context, union_symbol.pkg)
+
+	variants := make([dynamic]Symbol, 0, len(uv.types), context.temp_allocator)
+	for variant_expr in uv.types {
+		variant, ok := resolve_type_expression(ast_context, variant_expr)
+		if !ok {
+			return {}
+		}
+		append(&variants, variant)
+	}
+
+	// Candidate names come from the first variant (direct + `using`
+	// closure); a name missing there can't be present on all variants.
+	candidates := make([dynamic]Symbol, context.temp_allocator)
+	seen := make(map[string]bool, context.temp_allocator)
+	enumerate_ufcs_type_methods(ast_context, variants[0], &candidates, &seen, 0)
+
+	results := make([dynamic]Symbol, context.temp_allocator)
+	outer: for candidate in candidates {
+		for variant in variants[1:] {
+			if _, ok := try_resolve_ufcs_on_type(ast_context, variant, candidate.name); !ok {
+				continue outer
+			}
+		}
+		append(&results, candidate)
+	}
+	return results[:]
+}
+
+// Collects one symbol per method name reachable on `receiver` — its own
+// method bucket plus the buckets of its `using` closure.
+@(private = "file")
+enumerate_ufcs_type_methods :: proc(
+	ast_context: ^AstContext,
+	receiver: Symbol,
+	out: ^[dynamic]Symbol,
+	seen: ^map[string]bool,
+	depth: int,
+) {
+	if depth > 32 {
+		return
+	}
+
+	if receiver.name != "" {
+		method_pkg := receiver.pkg
+		if is_builtin_type_name(receiver.name) {
+			method_pkg = "$builtin"
+		}
+		method := Method{pkg = method_pkg, name = receiver.name}
+		for _, pkg in indexer.index.collection.packages {
+			symbols, ok := pkg.methods[method]
+			if !ok {
+				continue
+			}
+			for symbol in symbols {
+				if symbol.name in seen {
+					continue
+				}
+				if should_skip_private_symbol(symbol, ast_context.current_package, ast_context.uri) {
+					continue
+				}
+				seen[symbol.name] = true
+				append(out, symbol)
+			}
+		}
+	}
+
+	children := make([dynamic]Symbol, context.temp_allocator)
+	ufcs_enqueue_using_children(ast_context, receiver, &children)
+	for child in children {
+		enumerate_ufcs_type_methods(ast_context, child, out, seen, depth + 1)
+	}
 }
 
 // try_resolve_ufcs_in_scope looks up `field` as a procedure (or procedure

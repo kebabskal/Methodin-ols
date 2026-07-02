@@ -695,220 +695,6 @@ add_symbol_to_method :: proc(collection: ^SymbolCollection, pkg: ^SymbolPackage,
 	append(symbols, symbol)
 }
 
-// rewrite_method_calls_to_self walks `node` and, for each Call_Expr
-// whose callee is a bare Ident matching one of `method_names`, rewrites
-// the callee to `self.<ident>`. Mirrors the compiler's same-named pass
-// in parser.cpp so OLS sees the same AST shape and can resolve
-// goto-def / hover / completion on intra-method calls.
-@(private = "file")
-rewrite_method_calls_to_self :: proc(node: ^ast.Node, method_names: []string, file: ast.File) {
-	if node == nil do return
-
-	name_matches :: proc(s: string, set: []string) -> bool {
-		for x in set {
-			if x == s do return true
-		}
-		return false
-	}
-	walk_exprs :: proc(xs: []^ast.Expr, set: []string, file: ast.File) {
-		for x in xs do rewrite_method_calls_to_self(x, set, file)
-	}
-	walk_stmts :: proc(xs: []^ast.Stmt, set: []string, file: ast.File) {
-		for x in xs do rewrite_method_calls_to_self(x, set, file)
-	}
-
-	#partial switch n in node.derived {
-	case ^ast.Call_Expr:
-		if n.expr != nil {
-			if ident, ok := n.expr.derived.(^ast.Ident); ok && name_matches(ident.name, method_names) {
-				self_ident := ast.new(ast.Ident, ident.pos, ident.end)
-				self_ident.name = "self"
-				selector := ast.new(ast.Selector_Expr, ident.pos, ident.end)
-				selector.expr  = self_ident
-				selector.field = ident
-				n.expr = selector
-			}
-		}
-		rewrite_method_calls_to_self(n.expr, method_names, file)
-		walk_exprs(n.args, method_names, file)
-
-	case ^ast.Block_Stmt:        walk_stmts(n.stmts, method_names, file)
-	case ^ast.Expr_Stmt:         rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Return_Stmt:       walk_exprs(n.results, method_names, file)
-	case ^ast.Defer_Stmt:        rewrite_method_calls_to_self(n.stmt, method_names, file)
-	case ^ast.Assign_Stmt:
-		walk_exprs(n.lhs, method_names, file)
-		walk_exprs(n.rhs, method_names, file)
-	case ^ast.If_Stmt:
-		rewrite_method_calls_to_self(n.init, method_names, file)
-		rewrite_method_calls_to_self(n.cond, method_names, file)
-		rewrite_method_calls_to_self(n.body, method_names, file)
-		rewrite_method_calls_to_self(n.else_stmt, method_names, file)
-	case ^ast.For_Stmt:
-		rewrite_method_calls_to_self(n.init, method_names, file)
-		rewrite_method_calls_to_self(n.cond, method_names, file)
-		rewrite_method_calls_to_self(n.post, method_names, file)
-		rewrite_method_calls_to_self(n.body, method_names, file)
-	case ^ast.Range_Stmt:
-		walk_exprs(n.vals, method_names, file)
-		rewrite_method_calls_to_self(n.expr, method_names, file)
-		rewrite_method_calls_to_self(n.body, method_names, file)
-	case ^ast.Switch_Stmt:
-		rewrite_method_calls_to_self(n.init, method_names, file)
-		rewrite_method_calls_to_self(n.cond, method_names, file)
-		rewrite_method_calls_to_self(n.body, method_names, file)
-	case ^ast.Type_Switch_Stmt:
-		rewrite_method_calls_to_self(n.tag, method_names, file)
-		rewrite_method_calls_to_self(n.expr, method_names, file)
-		rewrite_method_calls_to_self(n.body, method_names, file)
-	case ^ast.Case_Clause:
-		walk_exprs(n.list, method_names, file)
-		walk_stmts(n.body, method_names, file)
-	case ^ast.When_Stmt:
-		rewrite_method_calls_to_self(n.cond, method_names, file)
-		rewrite_method_calls_to_self(n.body, method_names, file)
-		rewrite_method_calls_to_self(n.else_stmt, method_names, file)
-	case ^ast.Value_Decl:
-		walk_exprs(n.values, method_names, file)
-
-	case ^ast.Unary_Expr:    rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Binary_Expr:
-		rewrite_method_calls_to_self(n.left, method_names, file)
-		rewrite_method_calls_to_self(n.right, method_names, file)
-	case ^ast.Paren_Expr:    rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Selector_Expr: rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Index_Expr:
-		rewrite_method_calls_to_self(n.expr,  method_names, file)
-		rewrite_method_calls_to_self(n.index, method_names, file)
-	case ^ast.Deref_Expr:    rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Slice_Expr:
-		rewrite_method_calls_to_self(n.expr, method_names, file)
-		rewrite_method_calls_to_self(n.low,  method_names, file)
-		rewrite_method_calls_to_self(n.high, method_names, file)
-	case ^ast.Comp_Lit:      walk_exprs(n.elems, method_names, file)
-	case ^ast.Field_Value:
-		rewrite_method_calls_to_self(n.field, method_names, file)
-		rewrite_method_calls_to_self(n.value, method_names, file)
-	case ^ast.Ternary_If_Expr:
-		rewrite_method_calls_to_self(n.x,    method_names, file)
-		rewrite_method_calls_to_self(n.cond, method_names, file)
-		rewrite_method_calls_to_self(n.y,    method_names, file)
-	case ^ast.Type_Assertion: rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Type_Cast:
-		rewrite_method_calls_to_self(n.type, method_names, file)
-		rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Auto_Cast:     rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Or_Else_Expr:
-		rewrite_method_calls_to_self(n.x, method_names, file)
-		rewrite_method_calls_to_self(n.y, method_names, file)
-	case ^ast.Or_Return_Expr: rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Or_Branch_Expr: rewrite_method_calls_to_self(n.expr, method_names, file)
-	case ^ast.Proc_Lit:       rewrite_method_calls_to_self(n.body, method_names, file)
-	}
-}
-
-// Pre-process a batch of in-struct methods: collect their names, then
-// rewrite each body's bare-ident calls so a method can call sibling
-// methods without an explicit `self.` (matches the compiler's
-// `rewrite_method_calls_to_self` pass in src/parser.cpp).
-@(private = "file")
-preprocess_in_struct_method_bodies :: proc(methods: []^ast.Stmt, file: ast.File) {
-	names := make([dynamic]string, 0, len(methods), context.temp_allocator)
-	for m in methods {
-		vd, vd_ok := m.derived.(^ast.Value_Decl)
-		if !vd_ok do continue
-		if len(vd.names) != 1 do continue
-		ident, i_ok := vd.names[0].derived.(^ast.Ident)
-		if !i_ok do continue
-		append(&names, ident.name)
-	}
-	if len(names) == 0 do return
-
-	for m in methods {
-		vd, vd_ok := m.derived.(^ast.Value_Decl)
-		if !vd_ok do continue
-		if len(vd.values) != 1 do continue
-		proc_lit, pl_ok := vd.values[0].derived.(^ast.Proc_Lit)
-		if !pl_ok do continue
-		if proc_lit.body == nil do continue
-		rewrite_method_calls_to_self(proc_lit.body, names[:], file)
-	}
-}
-
-// Looks up a same-file `Name :: struct { ... }` decl and returns its
-// Struct_Type AST. Used by the inheritance-aware union dispatch
-// collector below.
-@(private = "file")
-find_struct_type_in_file :: proc(file: ast.File, name: string) -> ^ast.Struct_Type {
-	for decl in file.decls {
-		vd, vd_ok := decl.derived.(^ast.Value_Decl)
-		if !vd_ok do continue
-		if vd.is_mutable do continue
-		if len(vd.values) != 1 || len(vd.names) != 1 do continue
-		name_ast, ni_ok := vd.names[0].derived.(^ast.Ident)
-		if !ni_ok do continue
-		if name_ast.name != name do continue
-		st, is_struct := vd.values[0].derived.(^ast.Struct_Type)
-		if !is_struct do continue
-		return st
-	}
-	return nil
-}
-
-// Returns a sample Symbol for `(sname, mname)` resolving through
-// single-ident `using` fields in the same file. Depth-capped to
-// defend against using-cycles the checker would normally flag later.
-@(private = "file")
-find_effective_method_lsp :: proc(method_pkg: ^SymbolPackage, file: ast.File, file_pkg_intern: string,
-                                   sname, mname: string, depth: int) -> (Symbol, bool) {
-	if depth > 8 do return Symbol{}, false
-
-	if syms, ok := method_pkg.methods[Method{pkg = file_pkg_intern, name = sname}]; ok {
-		for s in syms {
-			if s.name == mname do return s, true
-		}
-	}
-
-	st := find_struct_type_in_file(file, sname)
-	if st == nil || st.fields == nil do return Symbol{}, false
-	for field in st.fields.list {
-		if field == nil do continue
-		if ast.Field_Flag.Using not_in field.flags do continue
-		if field.type == nil do continue
-		ti, ti_ok := field.type.derived.(^ast.Ident)
-		if !ti_ok do continue
-		if hit, ok := find_effective_method_lsp(method_pkg, file, file_pkg_intern, ti.name, mname, depth+1); ok {
-			return hit, true
-		}
-	}
-	return Symbol{}, false
-}
-
-@(private = "file")
-collect_effective_method_names_lsp :: proc(method_pkg: ^SymbolPackage, file: ast.File, file_pkg_intern: string,
-                                            sname: string, out: ^[dynamic]string, depth: int) {
-	if depth > 8 do return
-
-	if syms, ok := method_pkg.methods[Method{pkg = file_pkg_intern, name = sname}]; ok {
-		for s in syms {
-			already := false
-			for x in out { if x == s.name { already = true; break } }
-			if !already do append(out, s.name)
-		}
-	}
-
-	st := find_struct_type_in_file(file, sname)
-	if st == nil || st.fields == nil do return
-	for field in st.fields.list {
-		if field == nil do continue
-		if ast.Field_Flag.Using not_in field.flags do continue
-		if field.type == nil do continue
-		ti, ti_ok := field.type.derived.(^ast.Ident)
-		if !ti_ok do continue
-		collect_effective_method_names_lsp(method_pkg, file, file_pkg_intern, ti.name, out, depth+1)
-	}
-}
-
 // register_in_struct_method synthesises a method-index entry for a
 // `name :: proc(...) {...}` declared inside a struct body or inside an
 // `impl <Type> { ... }` block. The compiler lifts these to free
@@ -951,6 +737,10 @@ register_in_struct_method :: proc(
 		symbol.pkg = pkg_name
 		symbol.uri = get_index_unique_string(collection, uri)
 		symbol.value = SymbolProcedureGroupValue{group = cloned_group}
+		// .Method also marks ownership: unlike fake-method entries (shallow
+		// copies of pkg.symbols entries), these own their cloned value trees
+		// and must be freed when their file is re-indexed or removed.
+		symbol.flags = {.Method}
 
 		method_key := Method{
 			pkg  = get_index_unique_string(collection, pkg_name),
@@ -1026,6 +816,8 @@ register_in_struct_method :: proc(
 	symbol.pkg = pkg_name
 	symbol.uri = get_index_unique_string(collection, uri)
 	symbol.value = value
+	// See the proc-group branch above: .Method marks owned value trees.
+	symbol.flags = {.Method}
 
 	method_key := Method{
 		pkg  = get_index_unique_string(collection, pkg_name),
@@ -1120,10 +912,21 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 	file_pkg_name := get_symbol_package_name(collection, directory, uri)
 	file_pkg := get_or_create_package(collection, file_pkg_name)
 	doc, comment := get_package_decl_doc_comment(file, collection.allocator)
-	
-	u := strings.clone(uri, collection.allocator)
-	file_pkg.doc[u] = doc
-	file_pkg.comment[u] = comment
+
+	// Re-indexing an open file runs this on every change: reuse the existing
+	// map key and free the replaced strings, or both leak per keystroke.
+	if old_doc, has := file_pkg.doc[uri]; has {
+		if old_doc != "" do delete(old_doc, collection.allocator)
+		if old_comment := file_pkg.comment[uri]; old_comment != "" {
+			delete(old_comment, collection.allocator)
+		}
+		file_pkg.doc[uri] = doc
+		file_pkg.comment[uri] = comment
+	} else {
+		u := strings.clone(uri, collection.allocator)
+		file_pkg.doc[u] = doc
+		file_pkg.comment[u] = comment
+	}
 
 	for expr in exprs {
 		symbol: Symbol
@@ -1213,8 +1016,7 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 			// per-receiver method index. The struct's name (= expr.name) is the
 			// receiver type the methods get keyed under.
 			if len(v.methods) > 0 {
-				preprocess_in_struct_method_bodies(v.methods, file)
-				method_pkg := get_or_create_package(collection, symbol.pkg)
+					method_pkg := get_or_create_package(collection, symbol.pkg)
 				for m in v.methods {
 					register_in_struct_method(collection, method_pkg, symbol.pkg, expr.name, m, package_map, file, uri)
 				}
@@ -1407,69 +1209,18 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 		type_ident, ti_ok := impl.type_expr.derived.(^ast.Ident)
 		if !ti_ok do continue
 		struct_name := type_ident.name
-		preprocess_in_struct_method_bodies(impl.methods, file)
 		method_pkg := get_or_create_package(collection, file_pkg_name)
 		for m in impl.methods {
 			register_in_struct_method(collection, method_pkg, file_pkg_name, struct_name, m, package_map, file, uri)
 		}
 	}
 
-	// Mirror the compiler's union-dispatch synthesis (see
-	// `build_union_dispatcher` in src/parser.cpp): when every variant
-	// of a union has a method of the same name — either declared
-	// directly on the variant or inherited through a same-file `using`
-	// field — the compiler stitches a dispatcher into the auto
-	// proc-group so `u.method(...)` works. OLS's method index is keyed
-	// by receiver type, so the equivalent is to copy each variant's
-	// matching method (resolved through the same `using`-walk) into
-	// the union's method bucket.
-	{
-		method_pkg := get_or_create_package(collection, file_pkg_name)
-		file_pkg_intern := get_index_unique_string(collection, file_pkg_name)
-
-		for decl in file.decls {
-			vd, vd_ok := decl.derived.(^ast.Value_Decl)
-			if !vd_ok do continue
-			if len(vd.values) != 1 || len(vd.names) != 1 do continue
-			ut, is_union := vd.values[0].derived.(^ast.Union_Type)
-			if !is_union do continue
-			union_name_ident, uni_ok := vd.names[0].derived.(^ast.Ident)
-			if !uni_ok do continue
-			union_name := union_name_ident.name
-			if len(ut.variants) == 0 do continue
-
-			variant_names := make([dynamic]string, 0, len(ut.variants), context.temp_allocator)
-			variants_ok := true
-			for variant in ut.variants {
-				v_ident, vok := variant.derived.(^ast.Ident)
-				if !vok { variants_ok = false; break }
-				append(&variant_names, v_ident.name)
-			}
-			if !variants_ok do continue
-
-			candidate_names := make([dynamic]string, 0, 8, context.temp_allocator)
-			collect_effective_method_names_lsp(method_pkg, file, file_pkg_intern, variant_names[0], &candidate_names, 0)
-
-			for m_name in candidate_names {
-				sample, sample_ok := find_effective_method_lsp(method_pkg, file, file_pkg_intern, variant_names[0], m_name, 0)
-				if !sample_ok do continue
-
-				all_have_it := true
-				for i in 1 ..< len(variant_names) {
-					if _, ok := find_effective_method_lsp(method_pkg, file, file_pkg_intern, variant_names[i], m_name, 0); !ok {
-						all_have_it = false; break
-					}
-				}
-				if !all_have_it do continue
-
-				union_method_key := Method{
-					pkg  = file_pkg_intern,
-					name = get_index_unique_string(collection, union_name),
-				}
-				add_symbol_to_method(collection, method_pkg, union_method_key, sample)
-			}
-		}
-	}
+	// Union dispatch (`u.method(...)` when every variant has the method) is
+	// resolved at query time — see try_resolve_union_dispatch and
+	// union_dispatch_methods in analysis.odin. Materializing copies into the
+	// union's bucket here went stale whenever the union's file or the
+	// variants' file was re-indexed on its own (the copies carried the
+	// variant file's uri).
 
 	collect_imports(collection, file, directory)
 

@@ -271,6 +271,12 @@ remove_index_file :: proc(uri: common.Uri) -> common.Error {
 			for i := len(symbols) - 1; i >= 0; i -= 1 {
 				#no_bounds_check symbol := symbols[i]
 				if strings.equal_fold(corrected_uri.uri, symbol.uri) {
+					// Only in-struct/impl entries (.Method) own their value
+					// trees; fake-method entries share theirs with the
+					// pkg.symbols entry freed above.
+					if .Method in symbol.flags {
+						free_symbol(symbol, indexer.index.collection.allocator)
+					}
 					unordered_remove(&symbols, i)
 				}
 			}
@@ -326,7 +332,9 @@ index_file :: proc(uri: common.Uri, text: string) -> common.Error {
 
 		if !ok {
 			if !is_ols_builtin_file(fullpath) {
-				log.errorf("error in parse file for indexing %v", fullpath)
+				// A file that doesn't parse is a routine state mid-edit,
+				// not a server fault.
+				log.warnf("error in parse file for indexing %v", fullpath)
 			}
 		}
 	}
@@ -345,6 +353,12 @@ index_file :: proc(uri: common.Uri, text: string) -> common.Error {
 			for i := len(symbols) - 1; i >= 0; i -= 1 {
 				#no_bounds_check symbol := symbols[i]
 				if corrected_uri.uri == symbol.uri {
+					// Same ownership rule as remove_index_file: .Method
+					// entries own their cloned trees, fake-method entries
+					// don't.
+					if .Method in symbol.flags {
+						free_symbol(symbol, indexer.index.collection.allocator)
+					}
 					unordered_remove(&symbols, i)
 				}
 			}

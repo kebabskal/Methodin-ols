@@ -84,6 +84,20 @@ append_method_completion :: proc(
 		collect_using_methods(ast_context, position_context, selector_symbol, results, &seen, 0)
 	}
 
+	// Methodin: on a union receiver, offer the methods the compiler can
+	// dispatch — those present on every variant (directly or via `using`).
+	if _, is_union := selector_symbol.value.(SymbolUnionValue); is_union {
+		for &sample in union_dispatch_methods(ast_context, selector_symbol) {
+			resolve_unresolved_symbol(ast_context, &sample)
+			#partial switch &sym_value in sample.value {
+			case SymbolProcedureValue:
+				add_proc_method_completion(ast_context, &sample, sym_value, results)
+			case SymbolProcedureGroupValue:
+				add_proc_group_method_completion(ast_context, &sample, sym_value, results)
+			}
+		}
+	}
+
 	// Fixed-array receivers (e.g. linalg vectors) have no named type to key
 	// methods on, but UFCS reaches array-receiver free procs through any
 	// in-scope import. Offer those, indexed under the synthetic `$array` key.

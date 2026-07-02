@@ -118,3 +118,53 @@ methodin_auto_union_keyword_completion :: proc(t: ^testing.T) {
 	}
 	test.expect_completion_labels(t, &source, "", {"auto_union"})
 }
+
+// Union dispatch: `u.` offers exactly the methods present on EVERY variant
+// (the compiler only synthesises a dispatcher for those). `bark` is only on
+// Dog, so it must not be offered.
+@(test)
+methodin_union_dispatch_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Animal :: struct {
+			greet :: proc() {},
+		}
+		Dog :: struct {
+			greet :: proc() {},
+			bark :: proc() {},
+		}
+		Pet :: union { Animal, Dog }
+		main :: proc() {
+			p: Pet
+			p.{*}
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"greet"}, {"bark"})
+}
+
+// Union dispatch reaches methods a variant inherits through a `using` field.
+@(test)
+methodin_union_dispatch_completion_using :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Animal :: struct {
+			introduce :: proc() {},
+		}
+		Dog :: struct {
+			using base: Animal,
+		}
+		Cat :: struct {
+			using base: Animal,
+		}
+		Pet :: union { Dog, Cat }
+		main :: proc() {
+			p: Pet
+			p.{*}
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"introduce"})
+}

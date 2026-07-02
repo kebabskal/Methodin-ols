@@ -144,8 +144,13 @@ memory_index_fuzzy_search :: proc(
 			// Methodin: in-struct / impl methods are stored only in
 			// pkg.methods (keyed by receiver type), never in pkg.symbols, so
 			// scan them here too or they never show up in workspace symbols.
+			// Fake-method entries are copies of pkg.symbols entries already
+			// reported above — skip them or every free proc appears 2-3×.
 			for method_key, bucket in pkg.methods {
 				for symbol in bucket {
+					if .Method not_in symbol.flags {
+						continue
+					}
 					if should_skip_private_symbol(symbol, current_pkg, current_file_uri) {
 						continue
 					}
