@@ -1,3 +1,44 @@
+# Methodin-ols
+
+Language server and `odinfmt` formatter for [Methodin](https://github.com/kebabskal/Methodin),
+an experimental Odin fork that adds methods. Forked from
+[ols](https://github.com/DanielGavin/ols); tracks Methodin master and must be
+built with the Methodin compiler.
+
+## What this fork adds
+
+Full language support for Methodin's extensions on top of everything ols does
+for standard Odin:
+
+- **In-struct and `impl`-block methods** — completion, hover, go-to-definition,
+  rename (including locals inside method bodies), document symbols, and correct
+  signature help / inlay parameter hints at method call sites.
+- **Rvalue receivers and UFCS** — call resolution is validated against the
+  receiver type.
+- **`auto_union(T)`** — resolves to the underlying union, promotes the base
+  type's members for completion/hover/definition, and reports the alias name
+  instead of the literal `auto_union`.
+- **Type-scoped constants** (including chained access) and **struct field
+  defaults**.
+- **Struct-aware refactorings** — extract proc (also to a new file), extract
+  field, extract local variable, generate method, and file scaffolding, with
+  guards that refuse semantics-changing edits.
+- **odinfmt** understands all of the above, preserves the source file's line
+  endings, and only keeps constructs broken when the closer is on its own line.
+
+## Prebuilt binaries and VS Code extension
+
+Every push to master publishes a rolling
+[nightly release](https://github.com/kebabskal/Methodin-ols/releases/tag/nightly)
+with `ols` + `odinfmt` for Linux (x64/arm64), Windows (x64) and macOS
+(arm64/x64), plus **`methodin-ols.vsix`**. Install the extension with
+`code --install-extension methodin-ols.vsix`; it downloads the matching server
+binary automatically and checks the nightly release for updates once an hour.
+
+---
+
+Upstream ols documentation follows.
+
 # ols
 
 Language server for Odin. This project is still in early development.
