@@ -15,8 +15,8 @@ import { log, assert } from "./util";
 const pipeline = util.promisify(stream.pipeline);
 
 const GITHUB_API_ENDPOINT_URL = "https://api.github.com";
-const OWNER = "DanielGavin";
-const REPO = "ols";
+const OWNER = "kebabskal";
+const REPO = "Methodin-ols";
 
 export async function fetchRelease(
     releaseTag: string,

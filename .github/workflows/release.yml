@@ -1,109 +1,36 @@
 name: release
-env:
-  ODIN_BRANCH: master
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: 0 2 * * 0 # weekly 'nightly' release
   push:
-    tags:
-      - dev-**
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write # publish job creates/updates the "nightly" release
 
 jobs:
-  dist-arm64-darwin:
-    runs-on: macos-latest
-    timeout-minutes: 15
-    steps:
-    - uses: actions/checkout@v1
-    - name: Set ODIN_BRANCH from tag if available
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-      run: |
-        echo "ODIN_BRANCH=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-        echo "OLS_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-    - name: Download LLVM and setup PATH
-      run: |
-        brew install llvm@17
-        echo "/opt/homebrew/opt/llvm@17/bin" >> $GITHUB_PATH
-    - name: Download Odin
-      run: |
-        git clone --depth 1 --branch $ODIN_BRANCH https://github.com/odin-lang/Odin
-    - name: Build Odin
-      run: |
-        cd Odin
-        ./build_odin.sh release
-    - name: Build ols
-      run: ./ci.sh CI_NO_TESTS -target:darwin_arm64 -extra-linker-flags:"--target=arm64-apple-macos"
-    - name: Move to Dist
-      run: |
-        mkdir dist
-        mv ols dist/ols-arm64-darwin
-        mv odinfmt dist/odinfmt-arm64-darwin
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: dist-arm64-darwin
-        path: ./dist
-
-  dist-x86_64-darwin:
-    runs-on: macos-15-intel
-    timeout-minutes: 15
-    steps:
-    - uses: actions/checkout@v1
-    - name: Set ODIN_BRANCH from tag if available
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-      run: |
-        echo "ODIN_BRANCH=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-        echo "OLS_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-    - name: Download LLVM and setup PATH
-      run: |
-        brew install llvm@17
-        echo "/usr/local/opt/llvm@17/bin" >> $GITHUB_PATH
-        TMP_PATH=$(xcrun --show-sdk-path)/user/include
-        echo "CPATH=$TMP_PATH" >> $GITHUB_ENV
-    - name: Download Odin
-      run: |
-        git clone --depth 1 --branch $ODIN_BRANCH https://github.com/odin-lang/Odin
-    - name: Build Odin
-      run: |
-        cd Odin
-        make release
-    - name: Build ols
-      run: ./ci.sh CI
-    - name: Move to Dist
-      run: |
-        mkdir dist
-        mv ols dist/ols-x86_64-darwin
-        mv odinfmt dist/odinfmt-x86_64-darwin
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: dist-x86_64-darwin 
-        path: ./dist
-
+  # ols must be built with Methodin (not official Odin) — the compiler comes
+  # prebuilt from kebabskal/Methodin's rolling "latest" release. ci.sh/ci.bat
+  # expect it in ./Odin on PATH.
   dist-x86_64-unknown-linux-gnu:
+    runs-on: ubuntu-22.04 # matches the Methodin artifact's glibc/LLVM
     timeout-minutes: 30
-    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
-    - name: Set ODIN_BRANCH from tag if available
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    - uses: actions/checkout@v4
+    - name: Download Methodin
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
-        echo "ODIN_BRANCH=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-        echo "OLS_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-    - name: Download LLVM
-      run:  |
-        wget https://apt.llvm.org/llvm.sh
-        chmod +x llvm.sh
-        sudo ./llvm.sh 17
-        echo "/usr/lib/llvm-17/bin" >> $GITHUB_PATH
-    - name: Download Odin
+        mkdir Odin
+        gh release download latest -R kebabskal/Methodin \
+          -p "methodin-linux-amd64.tar.gz" -O - | tar -xz -C Odin
+    - name: Install LLVM runtime
+      # the prebuilt odin binary links libLLVM-20 dynamically
       run: |
-        git clone --depth 1 --branch $ODIN_BRANCH https://github.com/odin-lang/Odin
-    - name: Build Odin
-      run: |
-        cd Odin
-        ./build_odin.sh release
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt-llvm.asc > /dev/null
+        echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-20 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends libllvm20
     - name: Build ols
       run: ./ci.sh CI
     - name: Move to Dist
@@ -117,69 +44,52 @@ jobs:
         name: dist-x86_64-unknown-linux-gnu
         path: ./dist
 
-  dist-arm64-unknown-linux-gnu:
+  dist-arm64-darwin:
+    runs-on: macos-latest
     timeout-minutes: 30
-    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
-    - name: Set ODIN_BRANCH from tag if available
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    - uses: actions/checkout@v4
+    - name: Download Methodin
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
-        echo "ODIN_BRANCH=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-        echo "OLS_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-    - name: Download LLVM
-      run:  |
-        wget https://apt.llvm.org/llvm.sh
-        chmod +x llvm.sh
-        sudo ./llvm.sh 17
-        echo "/usr/lib/llvm-17/bin" >> $GITHUB_PATH
-    - name: Download Odin
-      run: |
-        git clone --depth 1 --branch $ODIN_BRANCH https://github.com/odin-lang/Odin
-    - name: Build Odin
-      run: |
-        cd Odin
-        ./build_odin.sh release
-    - name: Install ARM64 cross-compilation toolchain (for linker)
-      run: sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+        mkdir Odin
+        gh release download latest -R kebabskal/Methodin \
+          -p "methodin-macos-arm64.tar.gz" -O - | tar -xz -C Odin
+    - name: Install LLVM runtime
+      run: brew list llvm@20 &>/dev/null || brew install llvm@20
     - name: Build ols
-      run: ./ci.sh CI_NO_TESTS -target:linux_arm64 -linker:lld -microarch:generic -extra-linker-flags:'--target=aarch64-linux-gnu'
+      run: ./ci.sh CI
     - name: Move to Dist
       run: |
         mkdir dist
-        mv ols dist/ols-arm64-unknown-linux-gnu
-        mv odinfmt dist/odinfmt-arm64-unknown-linux-gnu
+        mv ols dist/ols-arm64-darwin
+        mv odinfmt dist/odinfmt-arm64-darwin
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: dist-arm64-unknown-linux-gnu
+        name: dist-arm64-darwin
         path: ./dist
 
   dist-x86_64-pc-windows-msvc:
-    timeout-minutes: 30
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v1
-    - name: Set ODIN_BRANCH from tag if available
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-      shell: pwsh
+    - uses: actions/checkout@v4
+    - name: Download Methodin
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      # LLVM-C.dll ships inside the archive next to odin.exe
       run: |
-        $tagName = $env:GITHUB_REF.Replace('refs/tags/', '')
-        echo "ODIN_BRANCH=$tagName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-        echo "OLS_VERSION=$tagName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-    - name: Download Odin
-      shell: cmd
-      run: |
-        git clone --depth 1 --branch %ODIN_BRANCH% https://github.com/odin-lang/Odin
-    - name: Build Odin
-      shell: cmd
-      run: |
-        call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-        cd Odin
-        ./build.bat 1
+        mkdir Odin
+        gh release download latest -R kebabskal/Methodin \
+          -p "methodin-windows-amd64.tar.gz" -O - | tar -xz -C Odin
+    - name: Set up MSVC
+      uses: ilammy/msvc-dev-cmd@v1
     - name: Build ols
       shell: cmd
-      run: ./ci.bat CI
+      run: ci.bat CI
     - name: Move to Dist
       shell: cmd
       run: |
@@ -195,44 +105,55 @@ jobs:
       with:
         name: dist-x86_64-pc-windows-msvc
         path: ./dist
+
+  vsix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Package VS Code extension
+      run: |
+        cd editors/vscode
+        npm ci
+        npm run build
+        mv extension.vsix methodin-ols.vsix
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: vsix
+        path: editors/vscode/methodin-ols.vsix
+
   publish:
     name: publish
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: ['dist-x86_64-pc-windows-msvc', 'dist-x86_64-unknown-linux-gnu', 'dist-arm64-unknown-linux-gnu', 'dist-x86_64-darwin', 'dist-arm64-darwin']
+    needs: ['dist-x86_64-pc-windows-msvc', 'dist-x86_64-unknown-linux-gnu', 'dist-arm64-darwin', 'vsix']
     steps:
-    - name: Install Nodejs
-      uses: actions/setup-node@v1
-      with:
-        node-version: 16.x
     - name: Checkout repository
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: ${{ env.FETCH_DEPTH }}
+      uses: actions/checkout@v4
 
-    - run: echo "HEAD_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
-    - run: 'echo "HEAD_SHA: $HEAD_SHA"'
-
-    - uses: actions/download-artifact@v4.1.7
+    - uses: actions/download-artifact@v4
       with:
         name: dist-x86_64-unknown-linux-gnu
         path: dist
-    - uses: actions/download-artifact@v4.1.7
-      with:
-        name: dist-arm64-unknown-linux-gnu
-        path: dist
-    - uses: actions/download-artifact@v4.1.7
+    - uses: actions/download-artifact@v4
       with:
         name: dist-x86_64-pc-windows-msvc
         path: dist
-    - uses: actions/download-artifact@v4.1.7
-      with:
-        name: dist-x86_64-darwin
-        path: dist
-    - uses: actions/download-artifact@v4.1.7
+    - uses: actions/download-artifact@v4
       with:
         name: dist-arm64-darwin
         path: dist
+    - uses: actions/download-artifact@v4
+      with:
+        name: vsix
+        path: dist
+
+    # Zip names must stay `ols-<platform>.zip` — the VS Code extension's
+    # auto-download looks assets up by exactly these names.
     - run: |
         ls -al ./dist
         cd dist
@@ -243,22 +164,15 @@ jobs:
         zip -r ols-x86_64-unknown-linux-gnu.zip ols-x86_64-unknown-linux-gnu odinfmt-x86_64-unknown-linux-gnu builtin
         rm ols-x86_64-unknown-linux-gnu odinfmt-x86_64-unknown-linux-gnu
 
-        chmod +x ols-arm64-unknown-linux-gnu odinfmt-arm64-unknown-linux-gnu
-        zip -r ols-arm64-unknown-linux-gnu.zip ols-arm64-unknown-linux-gnu odinfmt-arm64-unknown-linux-gnu builtin
-        rm ols-arm64-unknown-linux-gnu odinfmt-arm64-unknown-linux-gnu
-
-        chmod +x ols-x86_64-darwin odinfmt-x86_64-darwin
-        zip -r ols-x86_64-darwin.zip ols-x86_64-darwin odinfmt-x86_64-darwin builtin
-        rm ols-x86_64-darwin odinfmt-x86_64-darwin
-
         chmod +x ols-arm64-darwin odinfmt-arm64-darwin
         zip -r ols-arm64-darwin.zip ols-arm64-darwin odinfmt-arm64-darwin builtin
         rm ols-arm64-darwin odinfmt-arm64-darwin
 
         rm -rf builtin
+
     - name: Publish Release
       uses: ./.github/actions/github-release
       with:
         files: "dist/*"
-        name: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || 'nightly' }}
+        name: nightly
         token: ${{ secrets.GITHUB_TOKEN }}
