@@ -135,6 +135,9 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    # the github-release action reads HEAD_SHA to point the nightly tag
+    - run: echo "HEAD_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
     - uses: actions/download-artifact@v4
       with:
         name: dist-x86_64-unknown-linux-gnu
