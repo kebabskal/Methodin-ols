@@ -2255,6 +2255,10 @@ visit_struct_body :: proc(p: ^Printer, list: ^ast.Field_List, methods: []^ast.St
 					document = cons(document, text(" :" if p.config.spaces_around_colons else ":"), align)
 				}
 				document = cons_with_nopl(document, visit_expr(p, field.type))
+				if field.default_value != nil {
+					document = cons_with_nopl(document, text("="))
+					document = cons_with_nopl(document, visit_expr(p, field.default_value))
+				}
 			} else {
 				document = cons(document, text(":"), text("="))
 				document = cons_with_opl(document, visit_expr(p, field.default_value))
@@ -2352,6 +2356,10 @@ visit_struct_field_list :: proc(p: ^Printer, list: ^ast.Field_List, options := L
 				document = cons(document, text(" :" if p.config.spaces_around_colons else ":"), align)
 			}
 			document = cons_with_nopl(document, visit_expr(p, field.type))
+			if field.default_value != nil {
+				document = cons_with_nopl(document, text("="))
+				document = cons_with_nopl(document, visit_expr(p, field.default_value))
+			}
 		} else {
 			document = cons(document, text(":"), text("="))
 			document = cons_with_opl(document, visit_expr(p, field.default_value))
