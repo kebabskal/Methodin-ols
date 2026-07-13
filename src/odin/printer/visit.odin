@@ -371,10 +371,21 @@ visit_decl :: proc(p: ^Printer, decl: ^ast.Decl, called_in_stmt := false) -> ^Do
 			return document
 		}
 
+		alignment := get_possible_static_alignment(v.methods)
 		body := empty()
 		for m in v.methods {
-			vd := cast(^ast.Decl)m
-			body = cons(body, visit_decl(p, vd))
+			if svd, is_static := struct_static_const(m); is_static && p.config.align_struct_fields {
+				// Methodin: align `Name :: <const>` on the `::`, matching
+				// in-struct statics.
+				body = cons(body, move_line(p, m.pos))
+				body = cons(body, visit_exprs(p, svd.names, {.Add_Comma}))
+				pad := 1 + max(0, alignment - get_node_length(svd.names[0]))
+				body = cons(body, repeat_space(pad), text("::"))
+				body = cons_with_nopl(body, group(visit_exprs(p, svd.values, {.Add_Comma}, .Value_Decl)))
+			} else {
+				vd := cast(^ast.Decl)m
+				body = cons(body, visit_decl(p, vd))
+			}
 		}
 
 		document = cons(document, nest(body))
@@ -2210,10 +2221,21 @@ visit_struct_body :: proc(p: ^Printer, list: ^ast.Field_List, methods: []^ast.St
 		}
 
 		if item.method != nil {
-			// `name :: proc(...) {...}` — let the normal decl visitor
-			// handle proc-lit formatting.
-			vd := cast(^ast.Decl)item.method
-			document = cons(document, visit_decl(p, vd))
+			if svd, is_static := struct_static_const(item.method);
+			   is_static && .Enforce_Newline in options && p.config.align_struct_fields {
+				// Methodin: `Name :: <const>` — align the `::` into a
+				// column, mirroring how struct fields align their `:`.
+				document = cons(document, visit_exprs(p, svd.names, {.Add_Comma}))
+				alignment := get_possible_static_alignment(methods)
+				pad := 1 + max(0, alignment - get_node_length(svd.names[0]))
+				document = cons(document, repeat_space(pad), text("::"))
+				document = cons_with_nopl(document, group(visit_exprs(p, svd.values, {.Add_Comma}, .Value_Decl)))
+			} else {
+				// `name :: proc(...) {...}` — let the normal decl visitor
+				// handle proc-lit formatting.
+				vd := cast(^ast.Decl)item.method
+				document = cons(document, visit_decl(p, vd))
+			}
 		} else {
 			field := item.field
 
@@ -2748,6 +2770,34 @@ get_possible_field_alignment :: proc(fields: []^ast.Field) -> int {
 	}
 
 	return longest_name
+}
+
+// Methodin: an in-struct `Name :: <expr>` whose value is not a proc is a
+// type-scoped constant (`Colors.Black`) or nested type alias, parsed into
+// the struct's `methods` list. Returns the decl when it is such a constant.
+@(private)
+struct_static_const :: proc(stmt: ^ast.Stmt) -> (^ast.Value_Decl, bool) {
+	vd, ok := stmt.derived.(^ast.Value_Decl)
+	if !ok || vd.is_mutable || len(vd.names) != 1 || len(vd.values) != 1 {
+		return nil, false
+	}
+	#partial switch _ in vd.values[0].derived {
+	case ^ast.Proc_Lit, ^ast.Proc_Group:
+		return nil, false
+	}
+	return vd, true
+}
+
+// Longest name among a struct's constant statics, for `::` column alignment.
+@(private)
+get_possible_static_alignment :: proc(methods: []^ast.Stmt) -> int {
+	longest := 0
+	for m in methods {
+		if vd, ok := struct_static_const(m); ok {
+			longest = max(longest, get_node_length(vd.names[0]))
+		}
+	}
+	return longest
 }
 
 @(private)

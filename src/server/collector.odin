@@ -761,7 +761,10 @@ register_in_struct_method :: proc(
 
 		symbol := Symbol{}
 		symbol.range = common.get_token_range(name_ident^, file.src)
-		symbol.name = get_index_unique_string(collection, mangled)
+		// Index under the mangled `Struct__name` key (selector resolution and
+		// `Type.` completion look it up by that), but display the unmangled
+		// member name so completions/hover show `Black`, not `Colors__Black`.
+		symbol.name = get_index_unique_string(collection, name_ident.name)
 		symbol.type = .Constant
 		symbol.pkg = pkg_name
 		symbol.uri = get_index_unique_string(collection, uri)
