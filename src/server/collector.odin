@@ -790,6 +790,31 @@ register_in_struct_method :: proc(
 		proc_lit.where_clauses,
 	)
 
+	// Methodin: `name :: static proc(...)` — a type-scoped static. No `self`
+	// receiver is synthesised and it does NOT join the UFCS method bucket;
+	// instead register it under the mangled `Struct__name` key exactly like
+	// type-scoped constants, so `Type.name(...)` selector resolution and
+	// `Type.` completion find it. collect_procedure_fields already cloned the
+	// signature into the collection's long-lived allocator.
+	if vd.is_static_method {
+		mangled := strings.concatenate({struct_name, "__", name_ident.name}, context.temp_allocator)
+
+		symbol := Symbol{}
+		symbol.range = common.get_token_range(name_ident^, file.src)
+		symbol.name = get_index_unique_string(collection, name_ident.name)
+		symbol.type = .Function
+		symbol.pkg = pkg_name
+		symbol.uri = get_index_unique_string(collection, uri)
+		symbol.value = value
+
+		key := get_index_unique_string(collection, mangled)
+		if existing, ok := pkg.symbols[key]; ok {
+			free_symbol(existing, collection.allocator)
+		}
+		pkg.symbols[key] = symbol
+		return
+	}
+
 	// `ast.new` honours `context.allocator`, but the caller of collect_symbols
 	// sets that to a per-file arena that gets `arena_free_all`'d after every
 	// file (see build.odin). Anything we stash into pkg.methods has to outlive

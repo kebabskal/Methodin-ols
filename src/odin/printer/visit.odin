@@ -328,6 +328,12 @@ visit_decl :: proc(p: ^Printer, decl: ^ast.Decl, called_in_stmt := false) -> ^Do
 			}
 		}
 
+		// Methodin: `name :: static proc(...)` — type-scoped static method,
+		// the marker sits between `::` and the proc literal.
+		if v.is_static_method {
+			lhs = cons_with_nopl(lhs, text("static"))
+		}
+
 		if len(v.values) > 0 && v.is_mutable {
 			if v.type != nil {
 				lhs = cons_with_nopl(lhs, text("="))
