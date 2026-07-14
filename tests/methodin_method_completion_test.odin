@@ -207,6 +207,32 @@ methodin_struct_constant_completion :: proc(t: ^testing.T) {
 	test.expect_completion_labels(t, &source, ".", {"MAX_ENTITIES"})
 }
 
+// Package-qualified receivers complete the same way: `pkg.Color.` offers the
+// type-scoped constants declared in the type's impl block.
+@(test)
+methodin_type_scoped_constant_completion_qualified :: proc(t: ^testing.T) {
+	packages := make([dynamic]test.Package, context.temp_allocator)
+
+	append(&packages, test.Package{pkg = "colors", source = `package colors
+		Color :: [4]f64
+		impl Color {
+			Red :: Color{1, 0, 0, 1},
+			Blue :: Color{0, 0, 1, 1},
+		}
+	`})
+	source := test.Source {
+		main = `package test
+		import "colors"
+		main :: proc() {
+			c := colors.Color.{*}
+		}
+		`,
+		packages = packages[:],
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"Red", "Blue"})
+}
+
 // Rvalue receivers: completion works on temporaries (function results,
 // type-scoped constants) — resolution is type-based.
 @(test)
@@ -246,4 +272,84 @@ methodin_constant_chain_completion :: proc(t: ^testing.T) {
 		config = {enable_fake_method = true},
 	}
 	test.expect_completion_labels(t, &source, ".", {"scaled"})
+}
+
+// Same, at a call-argument site: `f(pkg.Color.{*})`.
+@(test)
+methodin_type_scoped_constant_completion_call_arg :: proc(t: ^testing.T) {
+	packages := make([dynamic]test.Package, context.temp_allocator)
+
+	append(&packages, test.Package{pkg = "colors", source = `package colors
+		Color :: [4]f64
+		impl Color {
+			Red :: Color{1, 0, 0, 1},
+			Blue :: Color{0, 0, 1, 1},
+		}
+	`})
+	source := test.Source {
+		main = `package test
+		import "colors"
+		draw :: proc(c: colors.Color) {}
+		main :: proc() {
+			draw(colors.Color.{*})
+		}
+		`,
+		packages = packages[:],
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, ".", {"Red", "Blue"})
+}
+
+// Comp-literal completion at a method call site: `x.method(&{...})` elides
+// the receiver, so the literal's type comes from parameter ONE, not zero.
+@(test)
+methodin_method_call_comp_lit_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Device :: struct { id: int }
+		Descriptor :: struct {
+			width:  int,
+			height: int,
+		}
+		create_pipeline :: proc(d: Device, desc: ^Descriptor) {}
+		main :: proc() {
+			d: Device
+			d.create_pipeline(&{
+				w{*}
+			})
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, "", {"width", "height"})
+}
+
+// Same through a nested pointer-typed field: `fragment = &{ ... }` inside the
+// outer literal must complete the pointee struct's fields.
+@(test)
+methodin_method_call_nested_pointer_comp_lit_completion :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Device :: struct { id: int }
+		FragmentState :: struct {
+			module:     int,
+			entryPoint: string,
+		}
+		Descriptor :: struct {
+			layout:   int,
+			fragment: ^FragmentState,
+		}
+		create_pipeline :: proc(d: Device, desc: ^Descriptor) {}
+		main :: proc() {
+			d: Device
+			d.create_pipeline(&{
+				fragment = &{
+					m{*}
+				},
+			})
+		}
+		`,
+		config = {enable_fake_method = true},
+	}
+	test.expect_completion_labels(t, &source, "", {"module", "entryPoint"})
 }

@@ -903,10 +903,14 @@ get_selector_completion :: proc(
 		return is_incomplete
 	}
 
-	// Methodin: `Vec3.{*}` with the receiver written as the type's own name
-	// offers its type-scoped members (lifted `Vec3__*` constants, methods,
-	// nested types) under their unmangled names.
-	if base, base_ok := position_context.selector.derived.(^ast.Ident); base_ok && base.name == selector.name {
+	// Methodin: `Vec3.{*}` or `pkg.Vec3.{*}` with the receiver written as the
+	// type's own name offers its type-scoped members (lifted `Vec3__*`
+	// constants, methods, nested types) under their unmangled names.
+	type_scoped_base := position_context.selector
+	if sel, sel_ok := type_scoped_base.derived.(^ast.Selector_Expr); sel_ok {
+		type_scoped_base = sel.field // `pkg.Vec3` -> `Vec3`
+	}
+	if base, base_ok := type_scoped_base.derived.(^ast.Ident); base_ok && base.name == selector.name {
 		add_type_scoped_member_completions(ast_context, selector, results)
 	}
 

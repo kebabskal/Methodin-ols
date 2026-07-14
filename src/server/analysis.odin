@@ -4411,6 +4411,11 @@ get_call_argument_type :: proc(
 		ident := field.field.derived.(^ast.Ident) or_return
 		arg = get_proc_arg_type_from_name(value, ident.name) or_return
 	} else {
+		// Methodin: `x.method(...)` elides the receiver, so a positional arg
+		// pairs with the parameter one past it (same offset as signature help).
+		if .Method in symbol.flags && !position_context.arrow {
+			index += 1
+		}
 		arg = get_proc_arg_type_from_index(value, index) or_return
 	}
 
