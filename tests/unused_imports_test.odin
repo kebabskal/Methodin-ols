@@ -108,6 +108,61 @@ import_used_only_via_ufcs_method_on_field_is_not_unused :: proc(t: ^testing.T) {
 	test.expect_unused_imports(t, &source, {})
 }
 
+// A local package providing a type, so a parameter can be declared with the
+// same name as the package (`png: ^png.Image` shape).
+@(private = "file")
+IMAGE_PKG :: test.Package {
+	pkg    = "imgpkg",
+	source = `package imgpkg
+		Image :: struct {
+			width: int,
+		}
+	`,
+}
+
+// An import whose only reference is in the type of a parameter *named after the
+// package* (`imgpkg: ^imgpkg.Image`) must not be reported as unused: the
+// parameter entity is declared after its own type is resolved, so the package
+// is what the type's base identifier refers to.
+@(test)
+import_used_only_in_type_of_same_named_param_is_not_unused :: proc(t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+		import "imgpkg"
+
+		load :: proc(imgpkg: ^imgpkg.Image) {}
+
+		main :: proc() {}
+		`,
+		packages = {IMAGE_PKG},
+	}
+
+	test.expect_unused_imports(t, &source, {})
+}
+
+// Same shadowing shape, but inside an in-struct method (the haylib
+// rendering.odin `load_png :: proc(png: ^png.Image)` repro).
+@(test)
+import_used_only_in_type_of_same_named_param_of_method_is_not_unused :: proc(t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+		import "imgpkg"
+
+		Texture :: struct {
+			size: int,
+			load :: proc(imgpkg: ^imgpkg.Image) {
+				size = imgpkg.width
+			},
+		}
+
+		main :: proc() {}
+		`,
+		packages = {IMAGE_PKG},
+	}
+
+	test.expect_unused_imports(t, &source, {})
+}
+
 // Methodin: an import referenced only inside an `impl Type { ... }` method must
 // not be reported as unused.
 @(test)

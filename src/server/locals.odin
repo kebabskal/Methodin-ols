@@ -1131,11 +1131,15 @@ get_locals_proc_param_and_results :: proc(
 
 				if arg.type != nil {
 					str := get_ast_node_string(name, file.src)
+					// The entity a param declares is only in scope *after* its own
+					// field: in `png: ^png.Image` the type's `png` is the package,
+					// not the param. Store the local with the field's end offset so
+					// it doesn't shadow identifiers inside its own type.
 					store_local(
 						ast_context,
 						name,
 						arg.type,
-						name.pos.offset,
+						arg.end.offset,
 						str,
 						ast_context.non_mutable_only,
 						false,
@@ -1156,7 +1160,7 @@ get_locals_proc_param_and_results :: proc(
 						ast_context,
 						name,
 						arg.default_value,
-						name.pos.offset,
+						arg.end.offset,
 						str,
 						ast_context.non_mutable_only,
 						false,
@@ -1181,7 +1185,7 @@ get_locals_proc_param_and_results :: proc(
 						ast_context,
 						name,
 						result.type,
-						name.pos.offset,
+						result.end.offset,
 						str,
 						ast_context.non_mutable_only,
 						false,
@@ -1195,7 +1199,7 @@ get_locals_proc_param_and_results :: proc(
 						ast_context,
 						name,
 						result.default_value,
-						name.pos.offset,
+						result.end.offset,
 						str,
 						ast_context.non_mutable_only,
 						false,
